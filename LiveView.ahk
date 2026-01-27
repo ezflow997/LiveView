@@ -206,7 +206,6 @@ class ThumbnailViewer {
         HotIfWinActive("ahk_id " this.gui.Hwnd)
         HotKey("h", (*) => this.ToggleSourceVisibility())
         HotKey("Escape", (*) => this.HandleEscape())
-        HotKey("F11", (*) => this.ToggleFullscreen())
         HotKey("e", (*) => this.ToggleEditFullscreen())
         HotKey("w", (*) => this.ShowWindowSelector())
         HotKey("s", (*) => this.StartSourceSelection())
@@ -232,8 +231,9 @@ class ThumbnailViewer {
         HotKey("^o", (*) => this.LoadConfig())
         HotIfWinActive()  ; Reset hotkey context
 
-        ; Global kill switch - works even in click-through fullscreen
+        ; Global hotkeys - work even in click-through fullscreen
         HotKey("^+Escape", (*) => this.Cleanup())
+        HotKey("F11", (*) => this.ToggleFullscreen())
 
         ; Mouse tracking
         this.SetupMouseTracking()
