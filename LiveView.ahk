@@ -65,6 +65,8 @@ class ThumbnailViewer {
                 config.sourceTitle := ""
             if !config.HasOwnProp("sourceExe")
                 config.sourceExe := ""
+            if !config.HasOwnProp("sourceClass")
+                config.sourceClass := ""
             this.regions.Push(config)
         }
 
@@ -717,14 +719,17 @@ Backgrounds:
             ; Save per-region source info
             sourceExe := ""
             sourceTitle := ""
+            sourceClass := ""
             if r.hSource {
                 try {
                     sourceExe := WinGetProcessName(r.hSource)
                     sourceTitle := WinGetTitle(r.hSource)
+                    sourceClass := WinGetClass(r.hSource)
                 }
             }
             IniWrite(sourceExe, selectedFile, section, "sourceExe")
             IniWrite(sourceTitle, selectedFile, section, "sourceTitle")
+            IniWrite(sourceClass, selectedFile, section, "sourceClass")
         }
 
         ; Write widgets
@@ -812,21 +817,30 @@ Backgrounds:
             ; Load per-region source info
             r.sourceExe := IniRead(selectedFile, section, "sourceExe", "")
             r.sourceTitle := IniRead(selectedFile, section, "sourceTitle", "")
+            r.sourceClass := IniRead(selectedFile, section, "sourceClass", "")
             r.hSource := 0
 
             ; Try to find the source window with exact title matching
             oldMode := A_TitleMatchMode
             SetTitleMatchMode(3)  ; Exact match
 
-            ; First try: exact title + exe combined
-            if r.sourceTitle != "" && r.sourceExe != "" {
+            ; First try: exact title + exe + class combined (most precise)
+            if r.sourceTitle != "" && r.sourceExe != "" && r.sourceClass != "" {
+                try r.hSource := WinExist(r.sourceTitle " ahk_exe " r.sourceExe " ahk_class " r.sourceClass)
+            }
+            ; Second try: exact title + exe
+            if !r.hSource && r.sourceTitle != "" && r.sourceExe != "" {
                 try r.hSource := WinExist(r.sourceTitle " ahk_exe " r.sourceExe)
             }
-            ; Second try: exact title only
+            ; Third try: exact title + class
+            if !r.hSource && r.sourceTitle != "" && r.sourceClass != "" {
+                try r.hSource := WinExist(r.sourceTitle " ahk_class " r.sourceClass)
+            }
+            ; Fourth try: exact title only
             if !r.hSource && r.sourceTitle != "" {
                 try r.hSource := WinExist(r.sourceTitle)
             }
-            ; Third try: any window from exe (fallback)
+            ; Fifth try: any window from exe (fallback)
             if !r.hSource && r.sourceExe != "" {
                 try r.hSource := WinExist("ahk_exe " r.sourceExe)
             }
@@ -941,21 +955,30 @@ Backgrounds:
 
                     r.sourceExe := IniRead(configFile, section, "sourceExe", "")
                     r.sourceTitle := IniRead(configFile, section, "sourceTitle", "")
+                    r.sourceClass := IniRead(configFile, section, "sourceClass", "")
                     r.hSource := 0
 
                     ; Try to find the source window with exact title matching
                     oldMode := A_TitleMatchMode
                     SetTitleMatchMode(3)  ; Exact match
 
-                    ; First try: exact title + exe combined
-                    if r.sourceTitle != "" && r.sourceExe != "" {
+                    ; First try: exact title + exe + class combined (most precise)
+                    if r.sourceTitle != "" && r.sourceExe != "" && r.sourceClass != "" {
+                        try r.hSource := WinExist(r.sourceTitle " ahk_exe " r.sourceExe " ahk_class " r.sourceClass)
+                    }
+                    ; Second try: exact title + exe
+                    if !r.hSource && r.sourceTitle != "" && r.sourceExe != "" {
                         try r.hSource := WinExist(r.sourceTitle " ahk_exe " r.sourceExe)
                     }
-                    ; Second try: exact title only
+                    ; Third try: exact title + class
+                    if !r.hSource && r.sourceTitle != "" && r.sourceClass != "" {
+                        try r.hSource := WinExist(r.sourceTitle " ahk_class " r.sourceClass)
+                    }
+                    ; Fourth try: exact title only
                     if !r.hSource && r.sourceTitle != "" {
                         try r.hSource := WinExist(r.sourceTitle)
                     }
-                    ; Third try: any window from exe (fallback)
+                    ; Fifth try: any window from exe (fallback)
                     if !r.hSource && r.sourceExe != "" {
                         try r.hSource := WinExist("ahk_exe " r.sourceExe)
                     }
@@ -968,7 +991,7 @@ Backgrounds:
 
             ; Ensure at least one region exists
             if this.regions.Length = 0 {
-                this.regions.Push({srcL: 0, srcT: 0, srcR: 200, srcB: 200, destL: 0, destT: 0, destR: 200, destB: 200, hSource: 0, sourceTitle: "", sourceExe: ""})
+                this.regions.Push({srcL: 0, srcT: 0, srcR: 200, srcB: 200, destL: 0, destT: 0, destR: 200, destB: 200, hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: ""})
             }
 
             ; Update region dropdown
@@ -1098,6 +1121,7 @@ Backgrounds:
         r.hSource := newHwnd
         r.sourceTitle := newTitle
         try r.sourceExe := WinGetProcessName(newHwnd)
+        try r.sourceClass := WinGetClass(newHwnd)
 
         ; Update region dropdown to show new source name
         currentValue := this.regionDropdown.Value
@@ -1616,7 +1640,7 @@ Backgrounds:
         newRegion := {
             srcL: 0, srcT: 0, srcR: 200, srcB: 200,
             destL: 0, destT: 0, destR: 200, destB: 200,
-            hSource: 0, sourceTitle: "", sourceExe: ""
+            hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: ""
         }
         this.regions.Push(newRegion)
 
@@ -1746,13 +1770,19 @@ Backgrounds:
             ; Try to find the window with exact title match
             hwnd := 0
 
-            ; If we have an exe, enumerate all windows for that exe and check titles
+            ; If we have an exe, enumerate all windows for that exe and check titles + class
             if r.sourceExe != "" {
                 try {
                     windows := WinGetList("ahk_exe " r.sourceExe)
                     for winHwnd in windows {
                         try {
                             winTitle := WinGetTitle(winHwnd)
+                            winClass := WinGetClass(winHwnd)
+                            ; Exact title + class match (most precise)
+                            if r.sourceTitle != "" && r.sourceClass != "" && winTitle = r.sourceTitle && winClass = r.sourceClass {
+                                hwnd := winHwnd
+                                break
+                            }
                             ; Exact title match
                             if r.sourceTitle != "" && winTitle = r.sourceTitle {
                                 hwnd := winHwnd
@@ -1768,13 +1798,20 @@ Backgrounds:
                 }
             }
 
-            ; If no exe or not found by exe, try by exact title only
+            ; If no exe or not found by exe, try by exact title + class
             if !hwnd && r.sourceTitle != "" {
                 try {
                     windows := WinGetList()
                     for winHwnd in windows {
                         try {
                             winTitle := WinGetTitle(winHwnd)
+                            winClass := WinGetClass(winHwnd)
+                            ; Exact title + class match first
+                            if r.sourceClass != "" && winTitle = r.sourceTitle && winClass = r.sourceClass {
+                                hwnd := winHwnd
+                                break
+                            }
+                            ; Exact title only
                             if winTitle = r.sourceTitle {
                                 hwnd := winHwnd
                                 break
@@ -2850,6 +2887,6 @@ Backgrounds:
 
 ; ===== MAIN =====
 ; Each region can have its own source window
-region1 := {srcL: 0, srcT: 0, srcR: 400, srcB: 300, destL: 0, destT: 0, destR: 400, destB: 300, hSource: 0, sourceTitle: "", sourceExe: ""}
+region1 := {srcL: 0, srcT: 0, srcR: 400, srcB: 300, destL: 0, destT: 0, destR: 400, destB: 300, hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: ""}
 
 viewer := ThumbnailViewer(region1)  ; Start with no source - will prompt to select
