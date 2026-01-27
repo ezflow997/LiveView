@@ -1778,18 +1778,18 @@ Backgrounds:
                         try {
                             winTitle := WinGetTitle(winHwnd)
                             winClass := WinGetClass(winHwnd)
-                            ; Exact title + class match (most precise)
-                            if r.sourceTitle != "" && r.sourceClass != "" && winTitle = r.sourceTitle && winClass = r.sourceClass {
+                            ; Strict exact title + class match (most precise)
+                            if r.sourceTitle != "" && r.sourceClass != "" && winTitle == r.sourceTitle && winClass == r.sourceClass {
                                 hwnd := winHwnd
                                 break
                             }
-                            ; Exact title match
-                            if r.sourceTitle != "" && winTitle = r.sourceTitle {
+                            ; Strict exact title match
+                            if r.sourceTitle != "" && winTitle == r.sourceTitle {
                                 hwnd := winHwnd
                                 break
                             }
                             ; If no title saved, take first window with this exe
-                            if r.sourceTitle = "" {
+                            if r.sourceTitle == "" {
                                 hwnd := winHwnd
                                 break
                             }
@@ -1806,13 +1806,13 @@ Backgrounds:
                         try {
                             winTitle := WinGetTitle(winHwnd)
                             winClass := WinGetClass(winHwnd)
-                            ; Exact title + class match first
-                            if r.sourceClass != "" && winTitle = r.sourceTitle && winClass = r.sourceClass {
+                            ; Strict exact title + class match first
+                            if r.sourceClass != "" && winTitle == r.sourceTitle && winClass == r.sourceClass {
                                 hwnd := winHwnd
                                 break
                             }
-                            ; Exact title only
-                            if winTitle = r.sourceTitle {
+                            ; Strict exact title only
+                            if winTitle == r.sourceTitle {
                                 hwnd := winHwnd
                                 break
                             }
