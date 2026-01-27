@@ -1130,6 +1130,14 @@ Backgrounds:
         try r.sourceExe := WinGetProcessName(newHwnd)
         try r.sourceClass := WinGetClass(newHwnd)
 
+        ; Get client rect of new source and set source rectangle to full window
+        clientRect := Buffer(16, 0)
+        DllCall("GetClientRect", "Ptr", newHwnd, "Ptr", clientRect)
+        r.srcL := 0
+        r.srcT := 0
+        r.srcR := NumGet(clientRect, 8, "Int")
+        r.srcB := NumGet(clientRect, 12, "Int")
+
         ; Update region dropdown to show new source name
         currentValue := this.regionDropdown.Value
         this.regionDropdown.Delete()
@@ -1474,7 +1482,7 @@ Backgrounds:
 
         r := this.regions[this.selectedRegion]
 
-        if !r.hSource {
+        if !r.hSource || !WinExist(r.hSource) {
             MsgBox("No source window selected for Region " this.selectedRegion ".`nPress W to select a window first.")
             return
         }
