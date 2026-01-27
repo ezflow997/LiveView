@@ -181,8 +181,8 @@ class ThumbnailViewer {
         ; Periodic redraw timer to keep controls visible when window is inactive
         SetTimer(() => this.ForceRedraw(), 500)
 
-        ; Check for missing source windows periodically (starts at 30 seconds)
-        SetTimer(() => this.CheckMissingSources(), 30000)
+        ; Check for missing source windows periodically (starts immediately)
+        SetTimer(() => this.CheckMissingSources(), -1000)
 
         this.gui.Show("w800 h600 x300")
 
@@ -797,8 +797,20 @@ Backgrounds:
         ; Clear existing regions
         this.regions := []
 
-        ; Track missing sources
-        missingSources := []
+        ; Enumerate all windows once
+        allWindows := []
+        try {
+            for winHwnd in WinGetList() {
+                try {
+                    allWindows.Push({
+                        hwnd: winHwnd,
+                        title: WinGetTitle(winHwnd),
+                        exe: WinGetProcessName(winHwnd),
+                        class: WinGetClass(winHwnd)
+                    })
+                }
+            }
+        }
 
         ; Load each region with its source
         Loop regionCount {
@@ -813,47 +825,38 @@ Backgrounds:
             r.destR := Integer(IniRead(selectedFile, section, "destR", 200))
             r.destB := Integer(IniRead(selectedFile, section, "destB", 200))
 
-            ; Load per-region source info
             r.sourceExe := IniRead(selectedFile, section, "sourceExe", "")
             r.sourceTitle := IniRead(selectedFile, section, "sourceTitle", "")
             r.sourceClass := IniRead(selectedFile, section, "sourceClass", "")
             r.hSource := 0
 
-            ; Try to find the source window with strict enumeration
-            ; (WinExist can match wrong window when titles are similar)
+            ; Try to find the source window from pre-enumerated list
             if r.sourceTitle != "" {
-                try {
-                    ; Enumerate windows and do strict string comparison
-                    searchCriteria := r.sourceExe != "" ? "ahk_exe " r.sourceExe : ""
-                    windows := WinGetList(searchCriteria)
-                    for winHwnd in windows {
-                        try {
-                            winTitle := WinGetTitle(winHwnd)
-                            ; Strict exact title match (case-sensitive, full string)
-                            if winTitle == r.sourceTitle {
-                                ; Also check class if we have it
-                                if r.sourceClass != "" {
-                                    winClass := WinGetClass(winHwnd)
-                                    if winClass == r.sourceClass {
-                                        r.hSource := winHwnd
-                                        break
-                                    }
-                                } else {
-                                    r.hSource := winHwnd
-                                    break
-                                }
+                for win in allWindows {
+                    if r.sourceExe != "" && win.exe != r.sourceExe
+                        continue
+                    if win.title == r.sourceTitle {
+                        if r.sourceClass != "" {
+                            if win.class == r.sourceClass {
+                                r.hSource := win.hwnd
+                                break
                             }
+                        } else {
+                            r.hSource := win.hwnd
+                            break
                         }
                     }
                 }
             }
             ; Fallback: any window from exe only if no specific title was saved
             if !r.hSource && r.sourceExe != "" && r.sourceTitle == "" {
-                try r.hSource := WinExist("ahk_exe " r.sourceExe)
+                for win in allWindows {
+                    if win.exe == r.sourceExe {
+                        r.hSource := win.hwnd
+                        break
+                    }
+                }
             }
-
-            if !r.hSource && (r.sourceExe != "" || r.sourceTitle != "")
-                missingSources.Push("Region " A_Index ": " (r.sourceTitle != "" ? r.sourceTitle : r.sourceExe))
 
             this.regions.Push(r)
         }
@@ -907,15 +910,10 @@ Backgrounds:
         if widgetCount > 0
             this.FetchWeather()
 
-        if missingSources.Length > 0 {
-            missingMsg := "Configuration loaded but some source windows not found:`n`n"
-            for msg in missingSources
-                missingMsg .= msg "`n"
-            missingMsg .= "`nSelect the region and press W to choose a window."
-            MsgBox(missingMsg)
-        } else {
-            MsgBox("Configuration loaded successfully!")
-        }
+        MsgBox("Configuration loaded. Checking for source windows...")
+
+        ; Trigger immediate check for missing sources
+        SetTimer(() => this.CheckMissingSources(), -1)
     }
 
     LoadConfigSilent(configFile) {
@@ -944,6 +942,21 @@ Backgrounds:
             ; Clear existing regions
             this.regions := []
 
+            ; Enumerate all windows once
+            allWindows := []
+            try {
+                for winHwnd in WinGetList() {
+                    try {
+                        allWindows.Push({
+                            hwnd: winHwnd,
+                            title: WinGetTitle(winHwnd),
+                            exe: WinGetProcessName(winHwnd),
+                            class: WinGetClass(winHwnd)
+                        })
+                    }
+                }
+            }
+
             ; Load each region with its source
             Loop regionCount {
                 try {
@@ -963,33 +976,34 @@ Backgrounds:
                     r.sourceClass := IniRead(configFile, section, "sourceClass", "")
                     r.hSource := 0
 
-                    ; Try to find the source window with strict enumeration
+                    ; Try to find the source window from pre-enumerated list
                     if r.sourceTitle != "" {
-                        try {
-                            searchCriteria := r.sourceExe != "" ? "ahk_exe " r.sourceExe : ""
-                            windows := WinGetList(searchCriteria)
-                            for winHwnd in windows {
-                                try {
-                                    winTitle := WinGetTitle(winHwnd)
-                                    if winTitle == r.sourceTitle {
-                                        if r.sourceClass != "" {
-                                            winClass := WinGetClass(winHwnd)
-                                            if winClass == r.sourceClass {
-                                                r.hSource := winHwnd
-                                                break
-                                            }
-                                        } else {
-                                            r.hSource := winHwnd
-                                            break
-                                        }
+                        for win in allWindows {
+                            ; Filter by exe if specified
+                            if r.sourceExe != "" && win.exe != r.sourceExe
+                                continue
+                            ; Strict exact title match
+                            if win.title == r.sourceTitle {
+                                if r.sourceClass != "" {
+                                    if win.class == r.sourceClass {
+                                        r.hSource := win.hwnd
+                                        break
                                     }
+                                } else {
+                                    r.hSource := win.hwnd
+                                    break
                                 }
                             }
                         }
                     }
                     ; Fallback: any window from exe only if no specific title was saved
                     if !r.hSource && r.sourceExe != "" && r.sourceTitle == "" {
-                        try r.hSource := WinExist("ahk_exe " r.sourceExe)
+                        for win in allWindows {
+                            if win.exe == r.sourceExe {
+                                r.hSource := win.hwnd
+                                break
+                            }
+                        }
                     }
 
                     this.regions.Push(r)
@@ -1771,12 +1785,40 @@ Backgrounds:
         hasMissing := false
         foundNew := false
 
+        ; Enumerate all windows once
+        allWindows := []
+        try {
+            for winHwnd in WinGetList() {
+                try {
+                    allWindows.Push({
+                        hwnd: winHwnd,
+                        title: WinGetTitle(winHwnd),
+                        exe: WinGetProcessName(winHwnd),
+                        class: WinGetClass(winHwnd)
+                    })
+                }
+            }
+        }
+
         for i, r in this.regions {
-            ; Check if source is still valid (window still exists)
+            ; Check if source is still valid (window exists AND title matches)
             if r.hSource {
-                if WinExist(r.hSource)
+                isValid := false
+                if WinExist(r.hSource) {
+                    ; Also verify the title still matches (if we have a saved title)
+                    if r.sourceTitle != "" {
+                        try {
+                            currentTitle := WinGetTitle(r.hSource)
+                            if currentTitle == r.sourceTitle
+                                isValid := true
+                        }
+                    } else {
+                        isValid := true  ; No title to verify, just existence
+                    }
+                }
+                if isValid
                     continue  ; Source is valid, skip
-                ; Window closed - clear the invalid handle and unregister thumbnail
+                ; Window closed or title changed - clear the invalid handle and unregister thumbnail
                 r.hSource := 0
                 if this.thumbnails.Length >= i && this.thumbnails[i] {
                     DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", this.thumbnails[i])
@@ -1792,56 +1834,44 @@ Backgrounds:
             ; This region has saved info but no source - it's missing
             hasMissing := true
 
-            ; Try to find the window with exact title match
+            ; Try to find the window from pre-enumerated list
             hwnd := 0
 
-            ; If we have an exe, enumerate all windows for that exe and check titles + class
+            ; If we have an exe, search windows for that exe
             if r.sourceExe != "" {
-                try {
-                    windows := WinGetList("ahk_exe " r.sourceExe)
-                    for winHwnd in windows {
-                        try {
-                            winTitle := WinGetTitle(winHwnd)
-                            winClass := WinGetClass(winHwnd)
-                            ; Strict exact title + class match (most precise)
-                            if r.sourceTitle != "" && r.sourceClass != "" && winTitle == r.sourceTitle && winClass == r.sourceClass {
-                                hwnd := winHwnd
-                                break
-                            }
-                            ; Strict exact title match
-                            if r.sourceTitle != "" && winTitle == r.sourceTitle {
-                                hwnd := winHwnd
-                                break
-                            }
-                            ; If no title saved, take first window with this exe
-                            if r.sourceTitle == "" {
-                                hwnd := winHwnd
-                                break
-                            }
-                        }
+                for win in allWindows {
+                    if win.exe != r.sourceExe
+                        continue
+                    ; Strict exact title + class match (most precise)
+                    if r.sourceTitle != "" && r.sourceClass != "" && win.title == r.sourceTitle && win.class == r.sourceClass {
+                        hwnd := win.hwnd
+                        break
+                    }
+                    ; Strict exact title match
+                    if r.sourceTitle != "" && win.title == r.sourceTitle {
+                        hwnd := win.hwnd
+                        break
+                    }
+                    ; If no title saved, take first window with this exe
+                    if r.sourceTitle == "" {
+                        hwnd := win.hwnd
+                        break
                     }
                 }
             }
 
             ; If no exe or not found by exe, try by exact title + class
             if !hwnd && r.sourceTitle != "" {
-                try {
-                    windows := WinGetList()
-                    for winHwnd in windows {
-                        try {
-                            winTitle := WinGetTitle(winHwnd)
-                            winClass := WinGetClass(winHwnd)
-                            ; Strict exact title + class match first
-                            if r.sourceClass != "" && winTitle == r.sourceTitle && winClass == r.sourceClass {
-                                hwnd := winHwnd
-                                break
-                            }
-                            ; Strict exact title only
-                            if winTitle == r.sourceTitle {
-                                hwnd := winHwnd
-                                break
-                            }
-                        }
+                for win in allWindows {
+                    ; Strict exact title + class match first
+                    if r.sourceClass != "" && win.title == r.sourceTitle && win.class == r.sourceClass {
+                        hwnd := win.hwnd
+                        break
+                    }
+                    ; Strict exact title only
+                    if win.title == r.sourceTitle {
+                        hwnd := win.hwnd
+                        break
                     }
                 }
             }
@@ -1853,39 +1883,58 @@ Backgrounds:
             }
         }
 
-        ; Re-register thumbnails if we found new sources
-        if foundNew {
-            this.ReRegisterAllThumbnails()
-            ; Recheck if anything still missing
-            hasMissing := false
-            for i, r in this.regions {
-                if !r.hSource && (r.sourceExe != "" || r.sourceTitle != "") {
-                    hasMissing := true
-                    break
-                }
+        ; Recheck if anything still missing
+        hasMissing := false
+        for i, r in this.regions {
+            if !r.hSource && (r.sourceExe != "" || r.sourceTitle != "") {
+                hasMissing := true
+                break
             }
         }
 
-        ; If no sources are missing, slow down to periodic checks (every 5 seconds)
-        ; to detect if windows close later
+        ; If ANY source is missing, unregister ALL thumbnails (don't display partial)
+        if hasMissing {
+            for i, thumb in this.thumbnails {
+                if thumb {
+                    DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", thumb)
+                    this.thumbnails[i] := 0
+                }
+            }
+        } else {
+            ; All sources found - register thumbnails if we found new ones
+            if foundNew {
+                this.ReRegisterAllThumbnails()
+            }
+        }
+
+        ; If no sources are missing, slow down to periodic checks (every 5 minutes)
         if !hasMissing {
-            if this.missingSourceCheckInterval != 5000 {
-                this.missingSourceCheckInterval := 5000
-                SetTimer(() => this.CheckMissingSources(), 5000)
+            if this.missingSourceCheckInterval != 300000 {
+                this.missingSourceCheckInterval := 300000
+                SetTimer(() => this.CheckMissingSources(), 300000)
             }
             return
+        }
+
+        ; Sources still missing - check every 20 seconds for up to 5 minutes
+        if elapsedTime < 300000 {
+            if this.missingSourceCheckInterval != 20000 {
+                this.missingSourceCheckInterval := 20000
+                SetTimer(() => this.CheckMissingSources(), 20000)
+            }
+            return
+        }
+
+        ; After 5 minutes with missing sources, switch to 5-minute interval
+        if this.missingSourceCheckInterval != 300000 {
+            this.missingSourceCheckInterval := 300000
+            SetTimer(() => this.CheckMissingSources(), 300000)
         }
 
         ; After 1 hour with missing sources, close the app
         if elapsedTime >= 3600000 {
             this.Cleanup()
             return
-        }
-
-        ; After 5 minutes, switch to 5-minute interval
-        if elapsedTime >= 300000 && this.missingSourceCheckInterval != 300000 {
-            this.missingSourceCheckInterval := 300000
-            SetTimer(() => this.CheckMissingSources(), 300000)
         }
     }
 
