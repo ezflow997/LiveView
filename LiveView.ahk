@@ -1192,9 +1192,6 @@ Backgrounds:
                 this.widgetDropdown.Visible := true
             this.isFullscreen := false
 
-            ; Show cursor
-            DllCall("ShowCursor", "Int", true)
-
             ; Remove click-through styles
             WinSetExStyle("-0x80020", this.gui.Hwnd)
         } else {
@@ -1219,9 +1216,6 @@ Backgrounds:
             this.gui.Move(mLeft, mTop, mRight - mLeft, mBottom - mTop)
 
             this.isFullscreen := true
-
-            ; Hide cursor
-            DllCall("ShowCursor", "Int", false)
 
             ; Add click-through styles (mouse passes to apps behind)
             WinSetExStyle("+0x80020", this.gui.Hwnd)
@@ -2837,10 +2831,6 @@ Backgrounds:
         SetTimer(() => this.ForceRedraw(), 0)
         SetTimer(() => this.CheckWeatherRefresh(), 0)
         SetTimer(() => this.CheckMissingSources(), 0)
-
-        ; Restore cursor if hidden
-        if this.isFullscreen
-            DllCall("ShowCursor", "Int", true)
 
         ; Shutdown GDI+
         this.ShutdownGDIPlus()
