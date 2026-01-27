@@ -1756,9 +1756,18 @@ Backgrounds:
         foundNew := false
 
         for i, r in this.regions {
-            ; Skip if already has a valid source
-            if r.hSource
-                continue
+            ; Check if source is still valid (window still exists)
+            if r.hSource {
+                if WinExist(r.hSource)
+                    continue  ; Source is valid, skip
+                ; Window closed - clear the invalid handle and unregister thumbnail
+                r.hSource := 0
+                if this.thumbnails.Length >= i && this.thumbnails[i] {
+                    DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", this.thumbnails[i])
+                    this.thumbnails[i] := 0
+                }
+                ; Fall through to re-find the window
+            }
 
             ; Skip if no source info saved
             if r.sourceExe = "" && r.sourceTitle = ""
@@ -1841,9 +1850,13 @@ Backgrounds:
             }
         }
 
-        ; If no sources are missing, stop checking
+        ; If no sources are missing, slow down to periodic checks (every 5 seconds)
+        ; to detect if windows close later
         if !hasMissing {
-            SetTimer(() => this.CheckMissingSources(), 0)
+            if this.missingSourceCheckInterval != 5000 {
+                this.missingSourceCheckInterval := 5000
+                SetTimer(() => this.CheckMissingSources(), 5000)
+            }
             return
         }
 
