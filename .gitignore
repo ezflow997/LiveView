@@ -9,6 +9,8 @@ LiveViewConfig.ini
 
 # Claude Code local state
 .claude/
+claude.md
+CLAUDE.md
 
 # Background images (keep folder structure)
 backgrounds/*
