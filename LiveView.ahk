@@ -237,7 +237,6 @@ class ThumbnailViewer {
         HotKey("^+Escape", (*) => this.Cleanup())
         HotKey("F11", (*) => this.ToggleFullscreen())
         HotKey("^F11", (*) => this.ToggleFullscreen())
-        HotKey("Escape", (*) => this.ExitFullscreenGlobal())
 
         ; Mouse tracking
         this.SetupMouseTracking()
@@ -1196,12 +1195,6 @@ Backgrounds:
     PositionExitButton() {
         this.gui.GetClientPos(,, &w, &h)
         this.exitButton.Move(w - 110, 10, 100, 30)
-    }
-
-    ExitFullscreenGlobal() {
-        ; Only act if in fullscreen mode (prevents Escape from interfering normally)
-        if this.isFullscreen
-            this.ToggleFullscreen()
     }
 
     ToggleFullscreen() {
