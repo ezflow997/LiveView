@@ -819,32 +819,38 @@ Backgrounds:
             r.sourceClass := IniRead(selectedFile, section, "sourceClass", "")
             r.hSource := 0
 
-            ; Try to find the source window with exact title matching
-            oldMode := A_TitleMatchMode
-            SetTitleMatchMode(3)  ; Exact match
-
-            ; First try: exact title + exe + class combined (most precise)
-            if r.sourceTitle != "" && r.sourceExe != "" && r.sourceClass != "" {
-                try r.hSource := WinExist(r.sourceTitle " ahk_exe " r.sourceExe " ahk_class " r.sourceClass)
+            ; Try to find the source window with strict enumeration
+            ; (WinExist can match wrong window when titles are similar)
+            if r.sourceTitle != "" {
+                try {
+                    ; Enumerate windows and do strict string comparison
+                    searchCriteria := r.sourceExe != "" ? "ahk_exe " r.sourceExe : ""
+                    windows := WinGetList(searchCriteria)
+                    for winHwnd in windows {
+                        try {
+                            winTitle := WinGetTitle(winHwnd)
+                            ; Strict exact title match (case-sensitive, full string)
+                            if winTitle == r.sourceTitle {
+                                ; Also check class if we have it
+                                if r.sourceClass != "" {
+                                    winClass := WinGetClass(winHwnd)
+                                    if winClass == r.sourceClass {
+                                        r.hSource := winHwnd
+                                        break
+                                    }
+                                } else {
+                                    r.hSource := winHwnd
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            ; Second try: exact title + exe
-            if !r.hSource && r.sourceTitle != "" && r.sourceExe != "" {
-                try r.hSource := WinExist(r.sourceTitle " ahk_exe " r.sourceExe)
-            }
-            ; Third try: exact title + class
-            if !r.hSource && r.sourceTitle != "" && r.sourceClass != "" {
-                try r.hSource := WinExist(r.sourceTitle " ahk_class " r.sourceClass)
-            }
-            ; Fourth try: exact title only
-            if !r.hSource && r.sourceTitle != "" {
-                try r.hSource := WinExist(r.sourceTitle)
-            }
-            ; Fifth try: any window from exe (fallback)
+            ; Fallback: any window from exe if title not found
             if !r.hSource && r.sourceExe != "" {
                 try r.hSource := WinExist("ahk_exe " r.sourceExe)
             }
-
-            SetTitleMatchMode(oldMode)  ; Restore original mode
 
             if !r.hSource && (r.sourceExe != "" || r.sourceTitle != "")
                 missingSources.Push("Region " A_Index ": " (r.sourceTitle != "" ? r.sourceTitle : r.sourceExe))
@@ -957,32 +963,33 @@ Backgrounds:
                     r.sourceClass := IniRead(configFile, section, "sourceClass", "")
                     r.hSource := 0
 
-                    ; Try to find the source window with exact title matching
-                    oldMode := A_TitleMatchMode
-                    SetTitleMatchMode(3)  ; Exact match
-
-                    ; First try: exact title + exe + class combined (most precise)
-                    if r.sourceTitle != "" && r.sourceExe != "" && r.sourceClass != "" {
-                        try r.hSource := WinExist(r.sourceTitle " ahk_exe " r.sourceExe " ahk_class " r.sourceClass)
+                    ; Try to find the source window with strict enumeration
+                    if r.sourceTitle != "" {
+                        try {
+                            searchCriteria := r.sourceExe != "" ? "ahk_exe " r.sourceExe : ""
+                            windows := WinGetList(searchCriteria)
+                            for winHwnd in windows {
+                                try {
+                                    winTitle := WinGetTitle(winHwnd)
+                                    if winTitle == r.sourceTitle {
+                                        if r.sourceClass != "" {
+                                            winClass := WinGetClass(winHwnd)
+                                            if winClass == r.sourceClass {
+                                                r.hSource := winHwnd
+                                                break
+                                            }
+                                        } else {
+                                            r.hSource := winHwnd
+                                            break
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    ; Second try: exact title + exe
-                    if !r.hSource && r.sourceTitle != "" && r.sourceExe != "" {
-                        try r.hSource := WinExist(r.sourceTitle " ahk_exe " r.sourceExe)
-                    }
-                    ; Third try: exact title + class
-                    if !r.hSource && r.sourceTitle != "" && r.sourceClass != "" {
-                        try r.hSource := WinExist(r.sourceTitle " ahk_class " r.sourceClass)
-                    }
-                    ; Fourth try: exact title only
-                    if !r.hSource && r.sourceTitle != "" {
-                        try r.hSource := WinExist(r.sourceTitle)
-                    }
-                    ; Fifth try: any window from exe (fallback)
                     if !r.hSource && r.sourceExe != "" {
                         try r.hSource := WinExist("ahk_exe " r.sourceExe)
                     }
-
-                    SetTitleMatchMode(oldMode)  ; Restore original mode
 
                     this.regions.Push(r)
                 }
