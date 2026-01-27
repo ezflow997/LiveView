@@ -1183,6 +1183,9 @@ Backgrounds:
 
             ; Show cursor
             DllCall("ShowCursor", "Int", true)
+
+            ; Remove click-through styles
+            WinSetExStyle("-0x80020", this.gui.Hwnd)
         } else {
             ; Save current position
             WinGetPos(&x, &y, &w, &h, this.gui.Hwnd)
@@ -1208,6 +1211,9 @@ Backgrounds:
 
             ; Hide cursor
             DllCall("ShowCursor", "Int", false)
+
+            ; Add click-through styles (mouse passes to apps behind)
+            WinSetExStyle("+0x80020", this.gui.Hwnd)
         }
         this.UpdateAllThumbnails()
         this.UpdateBackgroundSize()
