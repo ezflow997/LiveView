@@ -232,6 +232,9 @@ class ThumbnailViewer {
         HotKey("^o", (*) => this.LoadConfig())
         HotIfWinActive()  ; Reset hotkey context
 
+        ; Global kill switch - works even in click-through fullscreen
+        HotKey("^+Escape", (*) => this.Cleanup())
+
         ; Mouse tracking
         this.SetupMouseTracking()
 
