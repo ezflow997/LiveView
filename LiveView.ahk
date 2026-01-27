@@ -847,8 +847,8 @@ Backgrounds:
                     }
                 }
             }
-            ; Fallback: any window from exe if title not found
-            if !r.hSource && r.sourceExe != "" {
+            ; Fallback: any window from exe only if no specific title was saved
+            if !r.hSource && r.sourceExe != "" && r.sourceTitle == "" {
                 try r.hSource := WinExist("ahk_exe " r.sourceExe)
             }
 
@@ -987,7 +987,8 @@ Backgrounds:
                             }
                         }
                     }
-                    if !r.hSource && r.sourceExe != "" {
+                    ; Fallback: any window from exe only if no specific title was saved
+                    if !r.hSource && r.sourceExe != "" && r.sourceTitle == "" {
                         try r.hSource := WinExist("ahk_exe " r.sourceExe)
                     }
 
