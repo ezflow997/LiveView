@@ -1283,6 +1283,13 @@ Backgrounds:
             return
         }
 
+        ; Only track mouse when LiveView is the active window (editing mode)
+        if !this.isDragging && !WinActive("ahk_id " this.gui.Hwnd) {
+            wasLDown := lDown
+            wasRDown := rDown
+            return
+        }
+
         rDown := GetKeyState("RButton", "P")
 
         ; Get mouse position in client coordinates
