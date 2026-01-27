@@ -55,10 +55,6 @@ class ThumbnailViewer {
     lastWeatherText := ""
     lastBgIndex := 0
 
-    ; System cursor hiding
-    savedCursors := Map()
-    blankCursor := 0
-
     __New(regionConfigs*) {
         ; Initialize regions - each region can have its own source
         for config in regionConfigs {
@@ -1185,8 +1181,8 @@ Backgrounds:
                 this.widgetDropdown.Visible := true
             this.isFullscreen := false
 
-            ; Restore system cursors
-            this.RestoreSystemCursor()
+            ; Show cursor
+            DllCall("ShowCursor", "Int", true)
 
             ; Remove click-through styles
             WinSetExStyle("-0x80020", this.gui.Hwnd)
@@ -1213,8 +1209,8 @@ Backgrounds:
 
             this.isFullscreen := true
 
-            ; Hide system cursors
-            this.HideSystemCursor()
+            ; Hide cursor
+            DllCall("ShowCursor", "Int", false)
 
             ; Add click-through styles (mouse passes to apps behind)
             WinSetExStyle("+0x80020", this.gui.Hwnd)
@@ -1222,47 +1218,6 @@ Backgrounds:
         this.UpdateAllThumbnails()
         this.UpdateBackgroundSize()
         this.SendBackgroundToBack()
-    }
-
-    HideSystemCursor() {
-        ; Cursor type IDs to replace
-        cursorIds := [32512, 32513, 32514, 32515, 32516, 32640, 32641, 32642, 32643, 32644, 32645, 32646, 32648, 32649, 32650, 32651]
-        ; OCR_NORMAL, OCR_IBEAM, OCR_WAIT, OCR_CROSS, OCR_UP, OCR_SIZE, OCR_ICON, OCR_SIZENWSE, OCR_SIZENESW, OCR_SIZEWE, OCR_SIZENS, OCR_SIZEALL, OCR_NO, OCR_HAND, OCR_APPSTARTING, OCR_HELP
-
-        ; Create blank cursor (1x1 transparent)
-        if !this.blankCursor {
-            andMask := Buffer(4, 0xFF)
-            xorMask := Buffer(4, 0)
-            this.blankCursor := DllCall("CreateCursor", "Ptr", 0, "Int", 0, "Int", 0, "Int", 1, "Int", 1, "Ptr", andMask, "Ptr", xorMask, "Ptr")
-        }
-
-        ; Save and replace each cursor type
-        for id in cursorIds {
-            ; Get current cursor (CopyImage to get a copy we can save)
-            hCurrent := DllCall("LoadCursor", "Ptr", 0, "Ptr", id, "Ptr")
-            if hCurrent {
-                hCopy := DllCall("CopyImage", "Ptr", hCurrent, "UInt", 2, "Int", 0, "Int", 0, "UInt", 0, "Ptr")
-                this.savedCursors[id] := hCopy
-            }
-            ; Set blank cursor (need a copy for SetSystemCursor as it takes ownership)
-            hBlankCopy := DllCall("CopyImage", "Ptr", this.blankCursor, "UInt", 2, "Int", 0, "Int", 0, "UInt", 0, "Ptr")
-            DllCall("SetSystemCursor", "Ptr", hBlankCopy, "UInt", id)
-        }
-    }
-
-    RestoreSystemCursor() {
-        ; Restore all saved cursors
-        for id, hCursor in this.savedCursors {
-            if hCursor {
-                hCopy := DllCall("CopyImage", "Ptr", hCursor, "UInt", 2, "Int", 0, "Int", 0, "UInt", 0, "Ptr")
-                DllCall("SetSystemCursor", "Ptr", hCopy, "UInt", id)
-                DllCall("DestroyCursor", "Ptr", hCursor)
-            }
-        }
-        this.savedCursors.Clear()
-
-        ; Alternative: reset to system defaults
-        DllCall("SystemParametersInfo", "UInt", 0x57, "UInt", 0, "Ptr", 0, "UInt", 0)  ; SPI_SETCURSORS
     }
 
     SetupMouseTracking() {
@@ -2872,9 +2827,9 @@ Backgrounds:
         SetTimer(() => this.CheckWeatherRefresh(), 0)
         SetTimer(() => this.CheckMissingSources(), 0)
 
-        ; Restore system cursors if hidden
+        ; Restore cursor if hidden
         if this.isFullscreen
-            this.RestoreSystemCursor()
+            DllCall("ShowCursor", "Int", true)
 
         ; Shutdown GDI+
         this.ShutdownGDIPlus()
