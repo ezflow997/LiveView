@@ -1,0 +1,15 @@
+# Sensitive files
+api_keys.ini
+
+# Compiled binary
+*.exe
+
+# User config
+LiveViewConfig.ini
+
+# Claude Code local state
+.claude/
+
+# Background images (keep folder structure)
+backgrounds/*
+!backgrounds/.gitkeep
