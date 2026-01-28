@@ -54,6 +54,9 @@ class ThumbnailViewer {
     ; Not Live overlay controls
     notLiveOverlays := []
 
+    ; Filter overlay controls for each region
+    filterOverlays := []
+
     ; Preview window for source selection
     previewGui := ""
     previewThumb := 0
@@ -90,6 +93,11 @@ class ThumbnailViewer {
                 config.sourceExe := ""
             if !config.HasOwnProp("sourceClass")
                 config.sourceClass := ""
+            ; Filter overlay properties
+            if !config.HasOwnProp("filterColor")
+                config.filterColor := ""  ; Empty = no filter
+            if !config.HasOwnProp("filterOpacity")
+                config.filterOpacity := 80  ; Default opacity (0-255)
             this.regions.Push(config)
         }
 
@@ -158,6 +166,25 @@ class ThumbnailViewer {
         this.helpMenu := Menu()
         this.helpMenu.Add("Controls", (*) => this.ShowHelp())
 
+        ; Filter submenu for region color overlays
+        this.filterMenu := Menu()
+        this.filterMenu.Add("None", (*) => this.SetRegionFilter("", 0))
+        this.filterMenu.Add()
+        this.filterMenu.Add("Darken", (*) => this.SetRegionFilter("000000", 100))
+        this.filterMenu.Add("Lighten", (*) => this.SetRegionFilter("FFFFFF", 100))
+        this.filterMenu.Add()
+        this.filterMenu.Add("Warm (Orange)", (*) => this.SetRegionFilter("FF6600", 60))
+        this.filterMenu.Add("Cool (Blue)", (*) => this.SetRegionFilter("0066FF", 60))
+        this.filterMenu.Add()
+        this.filterMenu.Add("Red Tint", (*) => this.SetRegionFilter("FF0000", 60))
+        this.filterMenu.Add("Green Tint", (*) => this.SetRegionFilter("00FF00", 60))
+        this.filterMenu.Add("Blue Tint", (*) => this.SetRegionFilter("0000FF", 60))
+        this.filterMenu.Add()
+        this.filterMenu.Add("Sepia", (*) => this.SetRegionFilter("704214", 80))
+        this.filterMenu.Add("Purple", (*) => this.SetRegionFilter("800080", 60))
+        this.filterMenu.Add()
+        this.filterMenu.Add("Custom...", (*) => this.SetCustomFilter())
+
         ; Create right-click context menu (combines all menus)
         this.contextMenu := Menu()
         this.contextMenu.Add("Select Source Window`tW", (*) => this.ShowWindowSelector())
@@ -169,6 +196,7 @@ class ThumbnailViewer {
         this.contextMenu.Add("Bring to Front`tPgUp", (*) => this.BringToFront())
         this.contextMenu.Add("Send to Back`tPgDn", (*) => this.SendToBack())
         this.contextMenu.Add()
+        this.contextMenu.Add("Region Filter", this.filterMenu)
         this.contextMenu.Add("Widgets", this.widgetMenu)
         this.contextMenu.Add()
         this.contextMenu.Add("Save Config`tCtrl+S", (*) => this.SaveConfig())
@@ -826,6 +854,10 @@ BACKGROUNDS:
             IniWrite(sourceExe, selectedFile, section, "sourceExe")
             IniWrite(sourceTitle, selectedFile, section, "sourceTitle")
             IniWrite(sourceClass, selectedFile, section, "sourceClass")
+
+            ; Save filter settings
+            IniWrite(r.filterColor, selectedFile, section, "filterColor")
+            IniWrite(r.filterOpacity, selectedFile, section, "filterOpacity")
         }
 
         ; Write widgets
@@ -894,6 +926,13 @@ BACKGROUNDS:
         ; Clear existing regions
         this.regions := []
 
+        ; Clear filter overlays
+        for overlay in this.filterOverlays {
+            if overlay
+                try overlay.Destroy()
+        }
+        this.filterOverlays := []
+
         ; Enumerate all windows once (including other virtual desktops)
         allWindows := []
         prevHidden := A_DetectHiddenWindows
@@ -928,6 +967,8 @@ BACKGROUNDS:
             r.sourceExe := IniRead(selectedFile, section, "sourceExe", "")
             r.sourceTitle := IniRead(selectedFile, section, "sourceTitle", "")
             r.sourceClass := IniRead(selectedFile, section, "sourceClass", "")
+            r.filterColor := IniRead(selectedFile, section, "filterColor", "")
+            r.filterOpacity := Integer(IniRead(selectedFile, section, "filterOpacity", "80"))
             r.hSource := 0
 
             ; Try to find the source window from pre-enumerated list
@@ -1046,6 +1087,13 @@ BACKGROUNDS:
             ; Clear existing regions
             this.regions := []
 
+            ; Clear filter overlays
+            for overlay in this.filterOverlays {
+                if overlay
+                    try overlay.Destroy()
+            }
+            this.filterOverlays := []
+
             ; Enumerate all windows once (including other virtual desktops)
             allWindows := []
             prevHidden := A_DetectHiddenWindows
@@ -1081,6 +1129,8 @@ BACKGROUNDS:
                     r.sourceExe := IniRead(configFile, section, "sourceExe", "")
                     r.sourceTitle := IniRead(configFile, section, "sourceTitle", "")
                     r.sourceClass := IniRead(configFile, section, "sourceClass", "")
+                    r.filterColor := IniRead(configFile, section, "filterColor", "")
+                    r.filterOpacity := Integer(IniRead(configFile, section, "filterOpacity", "80"))
                     r.hSource := 0
 
                     ; Try to find the source window from pre-enumerated list
@@ -2193,12 +2243,16 @@ BACKGROUNDS:
         newRegion := {
             srcL: 0, srcT: 0, srcR: 200, srcB: 200,
             destL: 0, destT: 0, destR: 200, destB: 200,
-            hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: ""
+            hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: "",
+            filterColor: "", filterOpacity: 80
         }
         this.regions.Push(newRegion)
 
         ; Add placeholder for thumbnail (no source yet)
         this.thumbnails.Push(0)
+
+        ; Add placeholder for filter overlay
+        this.filterOverlays.Push(0)
 
         this.regionDropdown.Delete()
         this.regionDropdown.Add(this.GetRegionList())
@@ -2221,6 +2275,12 @@ BACKGROUNDS:
         ; Unregister thumbnail if it exists
         if idx <= this.thumbnails.Length && this.thumbnails[idx]
             DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", this.thumbnails[idx])
+
+        ; Destroy filter overlay if it exists
+        if idx <= this.filterOverlays.Length && this.filterOverlays[idx] {
+            try this.filterOverlays[idx].Destroy()
+            this.filterOverlays.RemoveAt(idx)
+        }
 
         if idx <= this.thumbnails.Length
             this.thumbnails.RemoveAt(idx)
@@ -2275,6 +2335,51 @@ BACKGROUNDS:
         this.regionDropdown.Value := this.selectedRegion
     }
 
+    SetRegionFilter(color, opacity) {
+        if this.selectedRegion > this.regions.Length
+            return
+
+        r := this.regions[this.selectedRegion]
+        r.filterColor := color
+        r.filterOpacity := opacity
+
+        ; Update the overlay immediately
+        this.UpdateThumbnail(this.selectedRegion)
+    }
+
+    SetCustomFilter() {
+        if this.selectedRegion > this.regions.Length
+            return
+
+        r := this.regions[this.selectedRegion]
+
+        ; Create a simple dialog to get color and opacity
+        filterGui := Gui("+AlwaysOnTop", "Custom Filter")
+        filterGui.SetFont("s10")
+
+        filterGui.AddText("w200", "Color (hex, e.g. FF0000):")
+        colorEdit := filterGui.AddEdit("w200", r.filterColor)
+
+        filterGui.AddText("w200", "Opacity (0-255):")
+        opacityEdit := filterGui.AddEdit("w200", String(r.filterOpacity))
+
+        filterGui.AddButton("w95", "Apply").OnEvent("Click", (*) => ApplyFilter())
+        filterGui.AddButton("x+10 w95", "Cancel").OnEvent("Click", (*) => filterGui.Destroy())
+
+        filterGui.Show()
+
+        ApplyFilter() {
+            newColor := colorEdit.Value
+            newOpacity := Integer(opacityEdit.Value)
+            newOpacity := Max(0, Min(255, newOpacity))
+
+            r.filterColor := newColor
+            r.filterOpacity := newOpacity
+            this.UpdateThumbnail(this.selectedRegion)
+            filterGui.Destroy()
+        }
+    }
+
     ReRegisterAllThumbnails() {
         ; Unregister all existing thumbnails
         for thumb in this.thumbnails {
@@ -2283,6 +2388,13 @@ BACKGROUNDS:
         }
 
         this.thumbnails := []
+
+        ; Clear filter overlays (they'll be recreated by UpdateThumbnail)
+        for overlay in this.filterOverlays {
+            if overlay
+                try overlay.Destroy()
+        }
+        this.filterOverlays := []
 
         ; Re-register using each region's source
         for i, region in this.regions {
@@ -3520,6 +3632,49 @@ BACKGROUNDS:
         NumPut("Int", 1, props, 44)
 
         DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", thumb, "Ptr", props)
+
+        ; Update filter overlay for this region
+        this.UpdateFilterOverlay(index, scaledDestL, scaledDestT, scaledDestR - scaledDestL, scaledDestB - scaledDestT)
+    }
+
+    UpdateFilterOverlay(index, x, y, w, h) {
+        r := this.regions[index]
+
+        ; Ensure filterOverlays array is large enough
+        while this.filterOverlays.Length < index
+            this.filterOverlays.Push(0)
+
+        ; If no filter color, hide/destroy the overlay
+        if (r.filterColor = "") {
+            if (this.filterOverlays[index] != 0) {
+                try this.filterOverlays[index].Destroy()
+                this.filterOverlays[index] := 0
+            }
+            return
+        }
+
+        ; Convert client coordinates to screen coordinates
+        pt := Buffer(8, 0)
+        NumPut("Int", x, pt, 0)
+        NumPut("Int", y, pt, 4)
+        DllCall("ClientToScreen", "Ptr", this.gui.Hwnd, "Ptr", pt)
+        screenX := NumGet(pt, 0, "Int")
+        screenY := NumGet(pt, 4, "Int")
+
+        ; Create overlay GUI if it doesn't exist
+        if (this.filterOverlays[index] = 0) {
+            overlay := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")  ; E0x20 = click-through
+            overlay.BackColor := r.filterColor
+            overlay.Show("x" screenX " y" screenY " w" w " h" h " NoActivate")
+            WinSetTransparent(r.filterOpacity, overlay.Hwnd)
+            this.filterOverlays[index] := overlay
+        } else {
+            ; Update existing overlay
+            overlay := this.filterOverlays[index]
+            overlay.BackColor := r.filterColor
+            overlay.Show("x" screenX " y" screenY " w" w " h" h " NoActivate")
+            WinSetTransparent(r.filterOpacity, overlay.Hwnd)
+        }
     }
 
     ForceRedraw() {
@@ -3654,6 +3809,12 @@ BACKGROUNDS:
             }
         }
 
+        ; Destroy filter overlays
+        for overlay in this.filterOverlays {
+            if overlay
+                try overlay.Destroy()
+        }
+
         for thumb in this.thumbnails {
             if thumb
                 DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", thumb)
@@ -3664,6 +3825,6 @@ BACKGROUNDS:
 
 ; ===== MAIN =====
 ; Each region can have its own source window
-region1 := {srcL: 0, srcT: 0, srcR: 400, srcB: 300, destL: 0, destT: 0, destR: 400, destB: 300, hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: ""}
+region1 := {srcL: 0, srcT: 0, srcR: 400, srcB: 300, destL: 0, destT: 0, destR: 400, destB: 300, hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: "", filterColor: "", filterOpacity: 80}
 
 viewer := ThumbnailViewer(region1)  ; Start with no source - will prompt to select
