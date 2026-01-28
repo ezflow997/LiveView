@@ -1220,14 +1220,16 @@ Backgrounds:
                 WinGetPos(&origX, &origY, &origW, &origH, newHwnd)
                 this.movedFromOtherDesktop[newHwnd] := {x: origX, y: origY, w: origW, h: origH}
 
-                ; Activate window to bring it to current desktop
-                WinActivate(newHwnd)
-                Sleep(100)
-
-                ; Move mostly off-screen (1 pixel visible to keep DWM live)
-                WinMove(this.GetBarelyOffScreenX(origW), origY,,, newHwnd)
-
-                this.ShowMessage("Window moved from other desktop (will restore on exit)")
+                ; Move window to current desktop using COM interface
+                if this.MoveWindowToCurrentDesktop(newHwnd) {
+                    Sleep(100)
+                    ; Move mostly off-screen (1 pixel visible to keep DWM live)
+                    WinMove(this.GetBarelyOffScreenX(origW), origY,,, newHwnd)
+                    this.ShowMessage("Window moved from other desktop (will restore on exit)")
+                } else {
+                    this.movedFromOtherDesktop.Delete(newHwnd)
+                    this.ShowMessage("Could not move window from other desktop")
+                }
             } catch as e {
                 this.ShowMessage("Could not move window: " e.Message)
             }
@@ -1258,6 +1260,33 @@ Backgrounds:
         this.UpdateThumbnail(this.selectedRegion)
     }
 
+    ; Move a window from another virtual desktop to the current one using COM
+    MoveWindowToCurrentDesktop(targetHwnd) {
+        ; IVirtualDesktopManager COM interface
+        CLSID := Buffer(16)
+        IID := Buffer(16)
+        DllCall("ole32\CLSIDFromString", "WStr", "{aa509086-5ca9-4c25-8f95-589d3c07b48a}", "Ptr", CLSID)
+        DllCall("ole32\CLSIDFromString", "WStr", "{a5cd92ff-29be-454c-8d04-d82879fb3f1b}", "Ptr", IID)
+
+        pVDM := 0
+        hr := DllCall("ole32\CoCreateInstance", "Ptr", CLSID, "Ptr", 0, "UInt", 1, "Ptr", IID, "Ptr*", &pVDM)
+        if (hr != 0 || !pVDM)
+            return false
+
+        ; Get current desktop ID from our own window
+        desktopId := Buffer(16)
+        hr := ComCall(4, pVDM, "Ptr", this.gui.Hwnd, "Ptr", desktopId)  ; GetWindowDesktopId
+        if (hr != 0) {
+            ObjRelease(pVDM)
+            return false
+        }
+
+        ; Move target window to current desktop
+        hr := ComCall(5, pVDM, "Ptr", targetHwnd, "Ptr", desktopId)  ; MoveWindowToDesktop
+        ObjRelease(pVDM)
+        return (hr = 0)
+    }
+
     ; Check if window is on another desktop and bring it to current if so
     BringWindowFromOtherDesktop(hwnd) {
         if this.movedFromOtherDesktop.Has(hwnd)
@@ -1273,12 +1302,14 @@ Backgrounds:
                 WinGetPos(&origX, &origY, &origW, &origH, hwnd)
                 this.movedFromOtherDesktop[hwnd] := {x: origX, y: origY, w: origW, h: origH}
 
-                ; Activate to bring to current desktop
-                WinActivate(hwnd)
-                Sleep(100)
-
-                ; Move mostly off-screen (1 pixel visible to keep DWM live)
-                WinMove(this.GetBarelyOffScreenX(origW), origY,,, hwnd)
+                ; Move window to current desktop using COM interface
+                if this.MoveWindowToCurrentDesktop(hwnd) {
+                    Sleep(100)
+                    ; Move mostly off-screen (1 pixel visible to keep DWM live)
+                    WinMove(this.GetBarelyOffScreenX(origW), origY,,, hwnd)
+                } else {
+                    this.movedFromOtherDesktop.Delete(hwnd)
+                }
             }
         }
     }
