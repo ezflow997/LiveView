@@ -51,6 +51,19 @@ class ThumbnailViewer {
     ; Not Live overlay controls
     notLiveOverlays := []
 
+    ; Preview window for source selection
+    previewGui := ""
+    previewThumb := 0
+    previewZoom := 1.0
+    previewPanX := 0
+    previewPanY := 0
+    previewSourceW := 0
+    previewSourceH := 0
+    previewDrawing := false
+    previewStartX := 0
+    previewStartY := 0
+    previewRect := ""
+
     ; Fullscreen click tracking
     fsClickCount := 0
     fsLastClickTime := 0
@@ -141,12 +154,29 @@ class ThumbnailViewer {
         this.helpMenu := Menu()
         this.helpMenu.Add("Controls", (*) => this.ShowHelp())
 
-        this.menus := MenuBar()
-        this.menus.Add("File", this.fileMenu)
-        this.menus.Add("Region", this.regionMenu)
-        this.menus.Add("Widgets", this.widgetMenu)
-        this.menus.Add("Help", this.helpMenu)
-        this.gui.MenuBar := this.menus
+        ; Create right-click context menu (combines all menus)
+        this.contextMenu := Menu()
+        this.contextMenu.Add("Select Source Window`tW", (*) => this.ShowWindowSelector())
+        this.contextMenu.Add("Select Source Area`tS", (*) => this.StartSourceSelection())
+        this.contextMenu.Add()
+        this.contextMenu.Add("Add New Region`tA", (*) => this.AddRegion())
+        this.contextMenu.Add("Delete Region`tD", (*) => this.DeleteRegion())
+        this.contextMenu.Add()
+        this.contextMenu.Add("Bring to Front`tPgUp", (*) => this.BringToFront())
+        this.contextMenu.Add("Send to Back`tPgDn", (*) => this.SendToBack())
+        this.contextMenu.Add()
+        this.contextMenu.Add("Widgets", this.widgetMenu)
+        this.contextMenu.Add()
+        this.contextMenu.Add("Save Config`tCtrl+S", (*) => this.SaveConfig())
+        this.contextMenu.Add("Load Config`tCtrl+O", (*) => this.LoadConfig())
+        this.contextMenu.Add()
+        this.contextMenu.Add("Edit Fullscreen`tE", (*) => this.ToggleEditFullscreen())
+        this.contextMenu.Add("Fullscreen (Locked)`tF11", (*) => this.ToggleFullscreen())
+        this.contextMenu.Add()
+        this.contextMenu.Add("Toggle Source Visibility`tH", (*) => this.ToggleSourceVisibility())
+        this.contextMenu.Add("Help", (*) => this.ShowHelp())
+        this.contextMenu.Add()
+        this.contextMenu.Add("Exit App", (*) => this.Cleanup())
 
         ; Status bar / region selector at bottom
         this.gui.SetFont("s10")
@@ -581,7 +611,7 @@ Backgrounds:
   Formats: .jpg, .jpeg, .png, .bmp
   Images cycle every 30 minutes
         )"
-        MsgBox(help, "Help")
+        this.ShowMessage(help, 10000)
     }
 
     HandleEscape() {
@@ -600,7 +630,7 @@ Backgrounds:
         ; Get list of visible windows
         windows := this.GetWindowList()
         if windows.Length = 0 {
-            MsgBox("No windows found")
+            this.ShowMessage("No windows found")
             return
         }
 
@@ -666,7 +696,10 @@ Backgrounds:
                 if !isVisible && !cloaked
                     continue
 
-                windows.Push({hwnd: hwnd, title: title})
+                ; Check if on another virtual desktop (DWM_CLOAKED_SHELL = 0x2)
+                isOnOtherDesktop := (cloaked & 0x2) != 0
+                displayTitle := isOnOtherDesktop ? "[Other Desktop] " title : title
+                windows.Push({hwnd: hwnd, title: displayTitle, isOtherDesktop: isOnOtherDesktop})
             }
         }
 
@@ -789,14 +822,14 @@ Backgrounds:
             return
 
         if !FileExist(selectedFile) {
-            MsgBox("File not found: " selectedFile)
+            this.ShowMessage("File not found: " selectedFile)
             return
         }
 
         ; Read number of regions
         regionCount := IniRead(selectedFile, "Regions", "Count", 0)
         if regionCount = 0 {
-            MsgBox("No regions found in config file")
+            this.ShowMessage("No regions found in config file")
             return
         }
 
@@ -816,8 +849,10 @@ Backgrounds:
         ; Clear existing regions
         this.regions := []
 
-        ; Enumerate all windows once
+        ; Enumerate all windows once (including other virtual desktops)
         allWindows := []
+        prevHidden := A_DetectHiddenWindows
+        DetectHiddenWindows(true)
         try {
             for winHwnd in WinGetList() {
                 try {
@@ -830,6 +865,7 @@ Backgrounds:
                 }
             }
         }
+        DetectHiddenWindows(prevHidden)
 
         ; Load each region with its source
         Loop regionCount {
@@ -929,7 +965,7 @@ Backgrounds:
         if widgetCount > 0
             this.FetchWeather()
 
-        MsgBox("Configuration loaded. Checking for source windows...")
+        this.ShowMessage("Configuration loaded")
 
         ; Trigger immediate check for missing sources
         SetTimer(() => this.CheckMissingSources(), -1)
@@ -961,8 +997,10 @@ Backgrounds:
             ; Clear existing regions
             this.regions := []
 
-            ; Enumerate all windows once
+            ; Enumerate all windows once (including other virtual desktops)
             allWindows := []
+            prevHidden := A_DetectHiddenWindows
+            DetectHiddenWindows(true)
             try {
                 for winHwnd in WinGetList() {
                     try {
@@ -975,6 +1013,7 @@ Backgrounds:
                     }
                 }
             }
+            DetectHiddenWindows(prevHidden)
 
             ; Load each region with its source
             Loop regionCount {
@@ -1202,7 +1241,6 @@ Backgrounds:
         if this.isEditFullscreen {
             ; Exit edit fullscreen
             this.gui.Opt("+Caption +Border")
-            this.gui.MenuBar := this.menus
             WinSetAlwaysOnTop(false, this.gui.Hwnd)
             this.gui.Move(this.savedGuiX, this.savedGuiY, this.savedGuiW, this.savedGuiH)
             this.regionDropdown.Visible := true
@@ -1223,7 +1261,6 @@ Backgrounds:
 
             ; Enter edit fullscreen - fullscreen but editable
             this.gui.Opt("-Caption -Border")
-            this.gui.MenuBar := ""
             this.regionDropdown.Visible := false
             this.widgetDropdown.Visible := false
             WinSetAlwaysOnTop(true, this.gui.Hwnd)
@@ -1249,7 +1286,6 @@ Backgrounds:
         if this.isFullscreen {
             ; Restore windowed mode
             this.gui.Opt("+Caption +Border")
-            this.gui.MenuBar := this.menus
             WinSetAlwaysOnTop(false, this.gui.Hwnd)
             this.gui.Move(this.savedGuiX, this.savedGuiY, this.savedGuiW, this.savedGuiH)
             this.regionDropdown.Visible := true
@@ -1272,7 +1308,6 @@ Backgrounds:
 
             ; Go true fullscreen
             this.gui.Opt("-Caption -Border")
-            this.gui.MenuBar := ""
             this.regionDropdown.Visible := false
             this.widgetDropdown.Visible := false
 
@@ -1397,13 +1432,29 @@ Backgrounds:
             this.SaveDragState()
         }
         else if (rDown && !wasRDown) {
-            ; Start resize drag
-            this.isDragging := true
-            this.dragType := "resize"
-            this.dragStartX := localX
-            this.dragStartY := localY
-            this.SaveDragState()
+            ; Check if clicking on empty space - show context menu
+            clickedWidget := this.GetWidgetAtPoint(localX, localY)
+            clickedRegion := this.GetRegionAtPoint(localX, localY)
+            if (clickedWidget = 0 && clickedRegion = 0) {
+                ; Right-click on empty space - show context menu
+                this.contextMenu.Show()
+            } else {
+                ; Start resize drag on region/widget
+                this.isDragging := true
+                this.dragType := "resize"
+                this.dragStartX := localX
+                this.dragStartY := localY
+                this.SaveDragState()
+            }
         }
+
+        ; Middle-click shows context menu anywhere
+        mDown := GetKeyState("MButton", "P")
+        static wasMDown := false
+        if (mDown && !wasMDown) {
+            this.contextMenu.Show()
+        }
+        wasMDown := mDown
 
         wasLDown := lDown
         wasRDown := rDown
@@ -1492,17 +1543,24 @@ Backgrounds:
             return
         r := this.regions[this.selectedRegion]
 
+        ; Convert delta from window coords to canvas coords
+        scale := this.GetScaleFactor()
+        if (scale = 0)
+            scale := 1
+        canvasDX := Round(dx / scale)
+        canvasDY := Round(dy / scale)
+
         if (this.dragType = "move") {
             w := this.savedDestR - this.savedDestL
             h := this.savedDestB - this.savedDestT
-            r.destL := this.savedDestL + dx
-            r.destT := this.savedDestT + dy
+            r.destL := this.savedDestL + canvasDX
+            r.destT := this.savedDestT + canvasDY
             r.destR := r.destL + w
             r.destB := r.destT + h
         }
         else if (this.dragType = "resize") {
-            r.destR := Max(this.savedDestL + 20, this.savedDestR + dx)
-            r.destB := Max(this.savedDestT + 20, this.savedDestB + dy)
+            r.destR := Max(this.savedDestL + 20, this.savedDestR + canvasDX)
+            r.destB := Max(this.savedDestT + 20, this.savedDestB + canvasDY)
         }
 
         this.UpdateThumbnail(this.selectedRegion)
@@ -1515,110 +1573,393 @@ Backgrounds:
         r := this.regions[this.selectedRegion]
 
         if !r.hSource || !WinExist(r.hSource) {
-            MsgBox("No source window selected for Region " this.selectedRegion ".`nPress W to select a window first.")
+            this.ShowMessage("No source window selected. Press W first.")
             return
         }
 
         if this.isFullscreen
             this.ToggleFullscreen()
 
-        ; Bring source to front if hidden (restore transparency)
-        if this.hiddenSources.Has(r.hSource) {
-            try WinSetTransparent("Off", r.hSource)
-            this.hiddenSources.Delete(r.hSource)
-        }
+        ; Use thumbnail preview for source selection
+        this.StartSourceSelectionOnThumbnail()
+    }
 
-        WinActivate(r.hSource)
-        Sleep(200)
+    StartSourceSelectionOnThumbnail() {
+        r := this.regions[this.selectedRegion]
 
-        ; Get client origin in screen coordinates using Windows API
-        pt := Buffer(8, 0)
-        NumPut("Int", 0, pt, 0)
-        NumPut("Int", 0, pt, 4)
-        DllCall("ClientToScreen", "Ptr", r.hSource, "Ptr", pt)
-        this.clientOriginX := NumGet(pt, 0, "Int")
-        this.clientOriginY := NumGet(pt, 4, "Int")
-
-        ; Get client rect size
+        ; Get source window client size
         clientRect := Buffer(16, 0)
         DllCall("GetClientRect", "Ptr", r.hSource, "Ptr", clientRect)
-        this.clientW := NumGet(clientRect, 8, "Int")
-        this.clientH := NumGet(clientRect, 12, "Int")
+        srcW := NumGet(clientRect, 8, "Int")
+        srcH := NumGet(clientRect, 12, "Int")
+
+        if srcW < 10 || srcH < 10 {
+            this.ShowMessage("Cannot get source window size")
+            return
+        }
+
+        ; Store source dimensions
+        this.thumbPreviewSrcW := srcW
+        this.thumbPreviewSrcH := srcH
+
+        ; Initialize zoom and pan state
+        this.thumbZoomLevel := 1.0
+        this.thumbPanX := 0
+        this.thumbPanY := 0
+        this.isPanning := false
+        this.panStartX := 0
+        this.panStartY := 0
+        this.panStartPanX := 0
+        this.panStartPanY := 0
+
+        ; Calculate initial preview size (70% of screen, maintain aspect ratio)
+        screenW := A_ScreenWidth
+        screenH := A_ScreenHeight
+        maxW := Round(screenW * 0.7)
+        maxH := Round(screenH * 0.7) - 50  ; Reserve space for instructions
+        this.thumbBaseScale := Min(maxW / srcW, maxH / srcH, 1.0)
+        previewW := Round(srcW * this.thumbBaseScale)
+        previewH := Round(srcH * this.thumbBaseScale)
+
+        ; Store effective scale for coordinate conversion
+        this.thumbPreviewScale := this.thumbBaseScale * this.thumbZoomLevel
+
+        ; Create preview window (resizable and maximizable)
+        this.thumbPreviewGui := Gui("+AlwaysOnTop +Resize", "Crop Preview - Draw to select, Wheel to zoom, Right-drag to pan")
+        this.thumbPreviewGui.BackColor := "222222"
+        this.thumbPreviewGui.OnEvent("Close", (*) => this.CancelThumbnailSelection())
+        this.thumbPreviewGui.OnEvent("Size", (*) => this.OnThumbnailPreviewResize())
+
+        ; Add instruction text
+        this.thumbPreviewGui.SetFont("s10 cWhite")
+        this.thumbPreviewGui.AddText("w" previewW " Center vInstructionText", "Left-drag: Select | Wheel: Zoom | Right-drag: Pan | Esc: Cancel")
+
+        ; Create a child window/control area for the thumbnail
+        this.thumbPreviewGui.AddText("w" previewW " h" previewH " Background000000 vThumbArea")
+
+        ; Add zoom indicator
+        this.thumbPreviewGui.AddText("x10 y+5 w100 cWhite vZoomText", "Zoom: 100%")
+
+        this.thumbPreviewGui.Show("AutoSize")
+
+        ; Get the control and its screen position
+        this.UpdateThumbnailAreaPosition()
+
+        ; Register a DWM thumbnail for the preview
+        previewThumb := 0
+        result := DllCall("dwmapi\DwmRegisterThumbnail",
+            "Ptr", this.thumbPreviewGui.Hwnd,
+            "Ptr", r.hSource,
+            "Ptr*", &previewThumb)
+        this.previewThumb := previewThumb
+
+        if result != 0 || !this.previewThumb {
+            this.ShowMessage("Failed to create preview thumbnail")
+            this.thumbPreviewGui.Destroy()
+            return
+        }
+
+        ; Update thumbnail properties
+        this.UpdateThumbnailPreviewProps()
 
         ; Selection rectangle (green border)
         this.selRect := Gui("+AlwaysOnTop -Caption +ToolWindow")
         this.selRect.BackColor := "00FF00"
         WinSetTransparent(150, this.selRect.Hwnd)
 
-        ; Instruction tooltip
-        ToolTip("Draw rectangle on source window`nClick and drag to select area`nPress Escape to cancel", this.clientOriginX + 10, this.clientOriginY + 10)
-
-        this.selectingSource := true
+        this.selectingOnThumbnail := true
         this.isDrawing := false
         this.selStartX := 0
         this.selStartY := 0
 
-        SetTimer(() => this.CheckSourceSelection(), 16)
+        ; Register mouse wheel handler for zoom
+        this.wheelHandler := ObjBindMethod(this, "OnThumbnailWheel")
+        OnMessage(0x020A, this.wheelHandler)  ; WM_MOUSEWHEEL
+
+        SetTimer(() => this.CheckThumbnailSelection(), 16)
     }
 
-    CheckSourceSelection() {
-        if !this.selectingSource
+    OnThumbnailWheel(wParam, lParam, msg, hwnd) {
+        if !this.selectingOnThumbnail
             return
 
-        ; Get mouse position using CoordMode Screen
+        ; Get wheel delta (positive = up/zoom in, negative = down/zoom out)
+        delta := (wParam >> 16) & 0xFFFF
+        if (delta > 0x7FFF)
+            delta := delta - 0x10000
+
+        ; Get mouse position from lParam
+        mouseX := lParam & 0xFFFF
+        mouseY := (lParam >> 16) & 0xFFFF
+        if (mouseX > 0x7FFF)
+            mouseX := mouseX - 0x10000
+        if (mouseY > 0x7FFF)
+            mouseY := mouseY - 0x10000
+
+        ; Call zoom handler
+        direction := (delta > 0) ? 1 : -1
+        this.HandleThumbnailZoom(direction, mouseX, mouseY)
+
+        return 0  ; Prevent default handling
+    }
+
+    UpdateThumbnailAreaPosition() {
+        if !this.thumbPreviewGui
+            return
+
+        thumbAreaCtrl := this.thumbPreviewGui["ThumbArea"]
+        thumbAreaCtrl.GetPos(&areaX, &areaY, &areaW, &areaH)
+
+        ; Convert control position to screen coordinates
+        pt := Buffer(8, 0)
+        NumPut("Int", areaX, pt, 0)
+        NumPut("Int", areaY, pt, 4)
+        DllCall("ClientToScreen", "Ptr", this.thumbPreviewGui.Hwnd, "Ptr", pt)
+
+        this.thumbAreaScreenX := NumGet(pt, 0, "Int")
+        this.thumbAreaScreenY := NumGet(pt, 4, "Int")
+        this.thumbAreaW := areaW
+        this.thumbAreaH := areaH
+        this.thumbAreaClientX := areaX
+        this.thumbAreaClientY := areaY
+    }
+
+    UpdateThumbnailPreviewProps() {
+        if !this.previewThumb || !this.thumbPreviewGui
+            return
+
+        thumbAreaCtrl := this.thumbPreviewGui["ThumbArea"]
+        thumbAreaCtrl.GetPos(&areaX, &areaY, &areaW, &areaH)
+
+        ; Calculate the effective scale
+        this.thumbPreviewScale := this.thumbBaseScale * this.thumbZoomLevel
+
+        ; Calculate source region based on zoom and pan
+        srcW := this.thumbPreviewSrcW
+        srcH := this.thumbPreviewSrcH
+
+        ; When zoomed, we show a portion of the source
+        visibleSrcW := Round(areaW / this.thumbPreviewScale)
+        visibleSrcH := Round(areaH / this.thumbPreviewScale)
+
+        ; Clamp pan to valid range
+        maxPanX := Max(0, srcW - visibleSrcW)
+        maxPanY := Max(0, srcH - visibleSrcH)
+        this.thumbPanX := Max(0, Min(this.thumbPanX, maxPanX))
+        this.thumbPanY := Max(0, Min(this.thumbPanY, maxPanY))
+
+        ; Source rectangle (what part of the source window to show)
+        srcL := Round(this.thumbPanX)
+        srcT := Round(this.thumbPanY)
+        srcR := Min(srcW, srcL + visibleSrcW)
+        srcB := Min(srcH, srcT + visibleSrcH)
+
+        ; Store visible source bounds for coordinate conversion
+        this.thumbVisibleSrcL := srcL
+        this.thumbVisibleSrcT := srcT
+        this.thumbVisibleSrcR := srcR
+        this.thumbVisibleSrcB := srcB
+
+        ; Update thumbnail properties
+        props := Buffer(48, 0)
+        NumPut("UInt", 0x1F, props, 0)  ; flags
+        NumPut("Int", areaX, props, 4)   ; dest left
+        NumPut("Int", areaY, props, 8)   ; dest top
+        NumPut("Int", areaX + areaW, props, 12)  ; dest right
+        NumPut("Int", areaY + areaH, props, 16)  ; dest bottom
+        NumPut("Int", srcL, props, 20)   ; src left
+        NumPut("Int", srcT, props, 24)   ; src top
+        NumPut("Int", srcR, props, 28)   ; src right
+        NumPut("Int", srcB, props, 32)   ; src bottom
+        NumPut("UChar", 255, props, 36)  ; opacity
+        NumPut("Int", 1, props, 40)      ; visible
+        NumPut("Int", 1, props, 44)      ; client area only
+
+        DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", this.previewThumb, "Ptr", props)
+
+        ; Update zoom indicator
+        try {
+            zoomPct := Round(this.thumbZoomLevel * 100)
+            this.thumbPreviewGui["ZoomText"].Value := "Zoom: " zoomPct "%"
+        }
+    }
+
+    OnThumbnailPreviewResize() {
+        if !this.thumbPreviewGui || !this.selectingOnThumbnail
+            return
+
+        ; Get new client size
+        this.thumbPreviewGui.GetClientPos(,, &clientW, &clientH)
+
+        ; Resize the thumbnail area control to fill available space
+        thumbAreaCtrl := this.thumbPreviewGui["ThumbArea"]
+        instructionCtrl := this.thumbPreviewGui["InstructionText"]
+        zoomCtrl := this.thumbPreviewGui["ZoomText"]
+
+        ; Reserve space for instruction text (top) and zoom text (bottom)
+        instructionCtrl.Move(5, 5, clientW - 10)
+        instructionCtrl.GetPos(,, &instrW, &instrH)
+
+        areaTop := instrH + 10
+        areaH := clientH - areaTop - 30  ; Reserve space for zoom text
+        if areaH < 50
+            areaH := 50
+
+        thumbAreaCtrl.Move(0, areaTop, clientW, areaH)
+        zoomCtrl.Move(10, areaTop + areaH + 5)
+
+        ; Update positions and thumbnail
+        this.UpdateThumbnailAreaPosition()
+        this.UpdateThumbnailPreviewProps()
+    }
+
+    HandleThumbnailZoom(direction, mouseX, mouseY) {
+        if !this.selectingOnThumbnail || !this.thumbPreviewGui
+            return
+
+        ; Calculate zoom factor
+        zoomFactor := (direction > 0) ? 1.25 : 0.8
+        oldZoom := this.thumbZoomLevel
+        newZoom := oldZoom * zoomFactor
+
+        ; Clamp zoom level (0.5x to 10x)
+        newZoom := Max(0.5, Min(newZoom, 10.0))
+
+        if newZoom = oldZoom
+            return
+
+        ; Calculate mouse position relative to thumbnail area
+        relX := mouseX - this.thumbAreaScreenX
+        relY := mouseY - this.thumbAreaScreenY
+
+        ; Only adjust pan if mouse is inside the thumbnail area
+        if (relX >= 0 && relX <= this.thumbAreaW && relY >= 0 && relY <= this.thumbAreaH) {
+            ; Calculate the source position under the mouse before zoom
+            oldScale := this.thumbBaseScale * oldZoom
+            srcXUnderMouse := this.thumbPanX + (relX / oldScale)
+            srcYUnderMouse := this.thumbPanY + (relY / oldScale)
+
+            ; Update zoom
+            this.thumbZoomLevel := newZoom
+            newScale := this.thumbBaseScale * newZoom
+
+            ; Adjust pan so the same source point stays under the mouse
+            this.thumbPanX := srcXUnderMouse - (relX / newScale)
+            this.thumbPanY := srcYUnderMouse - (relY / newScale)
+        } else {
+            this.thumbZoomLevel := newZoom
+        }
+
+        this.UpdateThumbnailPreviewProps()
+    }
+
+    CheckThumbnailSelection() {
+        if !this.selectingOnThumbnail
+            return
+
         CoordMode("Mouse", "Screen")
         MouseGetPos(&mx, &my)
 
         lDown := GetKeyState("LButton", "P")
+        rDown := GetKeyState("RButton", "P")
 
-        if (lDown && !this.isDrawing) {
-            ; Start drawing
-            this.isDrawing := true
-            this.selStartX := mx
-            this.selStartY := my
-            this.selRect.Show("x" mx " y" my " w1 h1 NoActivate")
+        ; Check if mouse is within the thumbnail area
+        inArea := (mx >= this.thumbAreaScreenX && mx <= this.thumbAreaScreenX + this.thumbAreaW
+                && my >= this.thumbAreaScreenY && my <= this.thumbAreaScreenY + this.thumbAreaH)
+
+        ; Handle right-click panning
+        if (rDown && !this.isPanning && inArea && !this.isDrawing) {
+            ; Start panning
+            this.isPanning := true
+            this.panStartX := mx
+            this.panStartY := my
+            this.panStartPanX := this.thumbPanX
+            this.panStartPanY := this.thumbPanY
         }
-        else if (lDown && this.isDrawing) {
-            ; Update rectangle while drawing
-            x1 := Min(this.selStartX, mx)
-            y1 := Min(this.selStartY, my)
-            w := Abs(mx - this.selStartX)
-            h := Abs(my - this.selStartY)
-            if (w < 1)
-                w := 1
-            if (h < 1)
-                h := 1
-            this.selRect.Move(x1, y1, w, h)
+        else if (rDown && this.isPanning) {
+            ; Update pan position
+            deltaX := mx - this.panStartX
+            deltaY := my - this.panStartY
+
+            ; Convert screen delta to source coordinates
+            this.thumbPanX := this.panStartPanX - (deltaX / this.thumbPreviewScale)
+            this.thumbPanY := this.panStartPanY - (deltaY / this.thumbPreviewScale)
+
+            this.UpdateThumbnailPreviewProps()
         }
-        else if (!lDown && this.isDrawing) {
-            ; Finished drawing
-            this.FinishSourceSelection(mx, my)
+        else if (!rDown && this.isPanning) {
+            ; Finish panning
+            this.isPanning := false
+        }
+
+        ; Handle left-click drawing (only if not panning)
+        if (!this.isPanning) {
+            if (lDown && !this.isDrawing && inArea) {
+                ; Start drawing - store position in SOURCE coordinates so it stays anchored when zooming
+                this.isDrawing := true
+                relX := mx - this.thumbAreaScreenX
+                relY := my - this.thumbAreaScreenY
+                this.selStartSrcX := this.thumbVisibleSrcL + (relX / this.thumbPreviewScale)
+                this.selStartSrcY := this.thumbVisibleSrcT + (relY / this.thumbPreviewScale)
+                this.selRect.Show("x" mx " y" my " w1 h1 NoActivate")
+            }
+            else if (lDown && this.isDrawing) {
+                ; Update rectangle while drawing
+                ; Convert source start position back to current screen position
+                startScreenX := this.thumbAreaScreenX + Round((this.selStartSrcX - this.thumbVisibleSrcL) * this.thumbPreviewScale)
+                startScreenY := this.thumbAreaScreenY + Round((this.selStartSrcY - this.thumbVisibleSrcT) * this.thumbPreviewScale)
+
+                ; Clamp current mouse position to thumbnail area
+                clampedX := Max(this.thumbAreaScreenX, Min(mx, this.thumbAreaScreenX + this.thumbAreaW))
+                clampedY := Max(this.thumbAreaScreenY, Min(my, this.thumbAreaScreenY + this.thumbAreaH))
+
+                ; Clamp start position too (in case zoomed out past original click)
+                startScreenX := Max(this.thumbAreaScreenX, Min(startScreenX, this.thumbAreaScreenX + this.thumbAreaW))
+                startScreenY := Max(this.thumbAreaScreenY, Min(startScreenY, this.thumbAreaScreenY + this.thumbAreaH))
+
+                x1 := Min(startScreenX, clampedX)
+                y1 := Min(startScreenY, clampedY)
+                w := Abs(clampedX - startScreenX)
+                h := Abs(clampedY - startScreenY)
+                if (w < 1)
+                    w := 1
+                if (h < 1)
+                    h := 1
+                this.selRect.Move(x1, y1, w, h)
+            }
+            else if (!lDown && this.isDrawing) {
+                ; Finished drawing
+                this.FinishThumbnailSelection(mx, my)
+            }
         }
     }
 
-    FinishSourceSelection(endX, endY) {
-        SetTimer(() => this.CheckSourceSelection(), 0)
-        this.selectingSource := false
+    FinishThumbnailSelection(endX, endY) {
+        SetTimer(() => this.CheckThumbnailSelection(), 0)
+        this.selectingOnThumbnail := false
         this.isDrawing := false
-        ToolTip()
 
-        ; Get the drawn rectangle bounds (screen coordinates)
-        scrX1 := Min(this.selStartX, endX)
-        scrY1 := Min(this.selStartY, endY)
-        scrX2 := Max(this.selStartX, endX)
-        scrY2 := Max(this.selStartY, endY)
+        ; Clamp end coordinates to thumbnail area
+        endX := Max(this.thumbAreaScreenX, Min(endX, this.thumbAreaScreenX + this.thumbAreaW))
+        endY := Max(this.thumbAreaScreenY, Min(endY, this.thumbAreaScreenY + this.thumbAreaH))
 
-        ; Convert screen coordinates to client coordinates
-        x1 := scrX1 - this.clientOriginX
-        y1 := scrY1 - this.clientOriginY
-        x2 := scrX2 - this.clientOriginX
-        y2 := scrY2 - this.clientOriginY
+        ; Convert end position to source coordinates
+        relEndX := endX - this.thumbAreaScreenX
+        relEndY := endY - this.thumbAreaScreenY
+        endSrcX := this.thumbVisibleSrcL + (relEndX / this.thumbPreviewScale)
+        endSrcY := this.thumbVisibleSrcT + (relEndY / this.thumbPreviewScale)
 
-        ; Clamp to client area
-        x1 := Max(0, Min(x1, this.clientW))
-        y1 := Max(0, Min(y1, this.clientH))
-        x2 := Max(0, Min(x2, this.clientW))
-        y2 := Max(0, Min(y2, this.clientH))
+        ; Use the source coordinates directly (selStartSrcX/Y were stored when drawing started)
+        x1 := Round(Min(this.selStartSrcX, endSrcX))
+        y1 := Round(Min(this.selStartSrcY, endSrcY))
+        x2 := Round(Max(this.selStartSrcX, endSrcX))
+        y2 := Round(Max(this.selStartSrcY, endSrcY))
+
+        ; Clamp to source dimensions
+        x1 := Max(0, Min(x1, this.thumbPreviewSrcW))
+        y1 := Max(0, Min(y1, this.thumbPreviewSrcH))
+        x2 := Max(0, Min(x2, this.thumbPreviewSrcW))
+        y2 := Max(0, Min(y2, this.thumbPreviewSrcH))
 
         ; Ensure minimum size
         if (x2 - x1 < 10)
@@ -1626,18 +1967,17 @@ Backgrounds:
         if (y2 - y1 < 10)
             y2 := y1 + 10
 
-        ; Update region - set both source and destination to 1:1 scale
+        ; Update region
         if (this.selectedRegion <= this.regions.Length) {
             r := this.regions[this.selectedRegion]
 
             ; Set source crop
-            r.srcL := Round(x1)
-            r.srcT := Round(y1)
-            r.srcR := Round(x2)
-            r.srcB := Round(y2)
+            r.srcL := x1
+            r.srcT := y1
+            r.srcR := x2
+            r.srcB := y2
 
             ; Set destination to same size as source (1:1 scale)
-            ; Keep current position but update size
             srcWidth := r.srcR - r.srcL
             srcHeight := r.srcB - r.srcT
             r.destR := r.destL + srcWidth
@@ -1648,18 +1988,36 @@ Backgrounds:
 
         ; Cleanup
         try this.selRect.Destroy()
+        if this.previewThumb {
+            DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", this.previewThumb)
+            this.previewThumb := 0
+        }
+        ; Unregister wheel handler
+        if this.wheelHandler
+            OnMessage(0x020A, this.wheelHandler, 0)
+        try this.thumbPreviewGui.Destroy()
+    }
 
-        WinActivate(this.gui.Hwnd)
+    CancelThumbnailSelection() {
+        if this.selectingOnThumbnail {
+            SetTimer(() => this.CheckThumbnailSelection(), 0)
+            this.selectingOnThumbnail := false
+            this.isDrawing := false
+            this.isPanning := false
+            try this.selRect.Destroy()
+            if this.previewThumb {
+                DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", this.previewThumb)
+                this.previewThumb := 0
+            }
+            ; Unregister wheel handler
+            if this.wheelHandler
+                OnMessage(0x020A, this.wheelHandler, 0)
+            try this.thumbPreviewGui.Destroy()
+        }
     }
 
     CancelSelection() {
-        if this.selectingSource {
-            SetTimer(() => this.CheckSourceSelection(), 0)
-            this.selectingSource := false
-            this.isDrawing := false
-            ToolTip()
-            try this.selRect.Destroy()
-        }
+        this.CancelThumbnailSelection()
     }
 
     GetRegionList() {
@@ -1700,14 +2058,14 @@ Backgrounds:
         this.selectedRegion := this.regions.Length
 
         ; Prompt to select source for new region
-        MsgBox("New region added. Press W to select a source window for Region " this.selectedRegion ".")
+        this.ShowMessage("New region added. Press W to select source.")
     }
 
     DeleteRegion() {
         if this.isFullscreen
             return
         if (this.regions.Length <= 1) {
-            MsgBox("Cannot delete the last region")
+            this.ShowMessage("Cannot delete the last region")
             return
         }
         idx := this.selectedRegion
@@ -2559,7 +2917,7 @@ Backgrounds:
         if !FileExist(curlPath) {
             this.weatherConfigControls.results.Delete()
             this.weatherConfigControls.results.Add(["curl.exe not found"])
-            MsgBox("curl.exe not found.`n`nDownload from: https://curl.se/windows/`nPlace curl.exe in: " A_ScriptDir, "Missing curl.exe")
+            this.ShowMessage("curl.exe not found - download from curl.se/windows")
             return
         }
         url := "https://geocoding-api.open-meteo.com/v1/search?name=" query "&count=10&language=en&format=json"
@@ -2814,7 +3172,7 @@ Backgrounds:
         }
         config .= ")"
         A_Clipboard := config
-        MsgBox("Configuration copied to clipboard!")
+        this.ShowMessage("Configuration copied to clipboard")
     }
 
     ToggleSourceVisibility() {
