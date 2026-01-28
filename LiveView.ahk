@@ -25,6 +25,7 @@ class ThumbnailViewer {
     clientH := 0
     isDrawing := false
     selectingSource := false
+    selectingOnThumbnail := false
     initialized := false
 
     ; Hidden sources tracking
@@ -98,6 +99,9 @@ class ThumbnailViewer {
                 config.filterColor := ""  ; Empty = no filter
             if !config.HasOwnProp("filterOpacity")
                 config.filterOpacity := 80  ; Default opacity (0-255)
+            ; Independent sync property - if true, displays regardless of other regions' sync status
+            if !config.HasOwnProp("independent")
+                config.independent := false
             this.regions.Push(config)
         }
 
@@ -149,6 +153,8 @@ class ThumbnailViewer {
         this.regionMenu.Add("Add New Region`tA", (*) => this.AddRegion())
         this.regionMenu.Add("Delete Region`tD", (*) => this.DeleteRegion())
         this.regionMenu.Add()
+        this.regionMenu.Add("Toggle Independent`tI", (*) => this.ToggleIndependent())
+        this.regionMenu.Add()
         this.regionMenu.Add("Bring to Front`tPgUp", (*) => this.BringToFront())
         this.regionMenu.Add("Send to Back`tPgDn", (*) => this.SendToBack())
         this.regionMenu.Add()
@@ -193,6 +199,7 @@ class ThumbnailViewer {
         this.contextMenu.Add("Add New Region`tA", (*) => this.AddRegion())
         this.contextMenu.Add("Delete Region`tD", (*) => this.DeleteRegion())
         this.contextMenu.Add()
+        this.contextMenu.Add("Toggle Independent`tI", (*) => this.ToggleIndependent())
         this.contextMenu.Add("Bring to Front`tPgUp", (*) => this.BringToFront())
         this.contextMenu.Add("Send to Back`tPgDn", (*) => this.SendToBack())
         this.contextMenu.Add()
@@ -238,6 +245,7 @@ class ThumbnailViewer {
         ; Missing source check timing
         this.appStartTime := A_TickCount
         this.missingSourceCheckInterval := 30000  ; starts at 30 seconds
+        this.missingSourcesStartTime := 0  ; tracks when sources first went missing
 
         ; Load API config if exists
         this.LoadAPIConfig()
@@ -289,6 +297,7 @@ class ThumbnailViewer {
         HotKey("d", (*) => this.DeleteRegion())
         HotKey("PgUp", (*) => this.BringToFront())
         HotKey("PgDn", (*) => this.SendToBack())
+        HotKey("i", (*) => this.ToggleIndependent())
 
         ; Arrow keys to move region
         HotKey("Up", (*) => this.NudgeRegion(0, -10))
@@ -642,6 +651,7 @@ KEYBOARD - Region/Widget:
   S                    Select source area
   A                    Add new region
   D                    Delete region
+  I                    Toggle independent
 
 KEYBOARD - App:
   W                    Select source window
@@ -662,6 +672,11 @@ BACKGROUNDS:
   Put images in 'backgrounds' folder
   Formats: .jpg, .jpeg, .png, .bmp
   Images cycle every 30 minutes
+
+INDEPENDENT REGIONS:
+  [I] prefix in dropdown
+  Displays even when other
+  regions are missing sources
         )"
 
         helpGui.AddText("cWhite", help)
@@ -858,6 +873,9 @@ BACKGROUNDS:
             ; Save filter settings
             IniWrite(r.filterColor, selectedFile, section, "filterColor")
             IniWrite(r.filterOpacity, selectedFile, section, "filterOpacity")
+
+            ; Save independent sync setting
+            IniWrite(r.HasOwnProp("independent") && r.independent ? 1 : 0, selectedFile, section, "independent")
         }
 
         ; Write widgets
@@ -969,6 +987,7 @@ BACKGROUNDS:
             r.sourceClass := IniRead(selectedFile, section, "sourceClass", "")
             r.filterColor := IniRead(selectedFile, section, "filterColor", "")
             r.filterOpacity := Integer(IniRead(selectedFile, section, "filterOpacity", "80"))
+            r.independent := Integer(IniRead(selectedFile, section, "independent", "0")) = 1
             r.hSource := 0
 
             ; Try to find the source window from pre-enumerated list
@@ -1131,6 +1150,7 @@ BACKGROUNDS:
                     r.sourceClass := IniRead(configFile, section, "sourceClass", "")
                     r.filterColor := IniRead(configFile, section, "filterColor", "")
                     r.filterOpacity := Integer(IniRead(configFile, section, "filterOpacity", "80"))
+                    r.independent := Integer(IniRead(configFile, section, "independent", "0")) = 1
                     r.hSource := 0
 
                     ; Try to find the source window from pre-enumerated list
@@ -1173,7 +1193,7 @@ BACKGROUNDS:
 
             ; Ensure at least one region exists
             if this.regions.Length = 0 {
-                this.regions.Push({srcL: 0, srcT: 0, srcR: 200, srcB: 200, destL: 0, destT: 0, destR: 200, destB: 200, hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: ""})
+                this.regions.Push({srcL: 0, srcT: 0, srcR: 200, srcB: 200, destL: 0, destT: 0, destR: 200, destB: 200, hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: "", filterColor: "", filterOpacity: 80, independent: false})
             }
 
             ; Update region dropdown
@@ -2221,10 +2241,12 @@ BACKGROUNDS:
     GetRegionList() {
         list := []
         for i, r in this.regions {
+            ; Build the region label
+            prefix := (r.HasOwnProp("independent") && r.independent) ? "[I] " : ""
             if r.sourceTitle != ""
-                list.Push("Region " i " (" SubStr(r.sourceTitle, 1, 20) ")")
+                list.Push(prefix "Region " i " (" SubStr(r.sourceTitle, 1, 18) ")")
             else
-                list.Push("Region " i " (no source)")
+                list.Push(prefix "Region " i " (no source)")
         }
         return list
     }
@@ -2244,7 +2266,7 @@ BACKGROUNDS:
             srcL: 0, srcT: 0, srcR: 200, srcB: 200,
             destL: 0, destT: 0, destR: 200, destB: 200,
             hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: "",
-            filterColor: "", filterOpacity: 80
+            filterColor: "", filterOpacity: 80, independent: false
         }
         this.regions.Push(newRegion)
 
@@ -2335,6 +2357,33 @@ BACKGROUNDS:
         this.regionDropdown.Value := this.selectedRegion
     }
 
+    ToggleIndependent() {
+        if this.isFullscreen
+            return
+
+        if this.selectedRegion > this.regions.Length
+            return
+
+        r := this.regions[this.selectedRegion]
+
+        ; Toggle the independent property
+        if !r.HasOwnProp("independent")
+            r.independent := false
+        r.independent := !r.independent
+
+        ; Update dropdown to show new status
+        this.regionDropdown.Delete()
+        this.regionDropdown.Add(this.GetRegionList())
+        this.regionDropdown.Value := this.selectedRegion
+
+        ; Show feedback
+        status := r.independent ? "Independent (displays alone)" : "Synced (waits for all)"
+        this.ShowMessage("Region " this.selectedRegion ": " status, 2000)
+
+        ; Trigger a refresh to update display state
+        SetTimer(() => this.CheckMissingSources(), -1)
+    }
+
     SetRegionFilter(color, opacity) {
         if this.selectedRegion > this.regions.Length
             return
@@ -2414,8 +2463,6 @@ BACKGROUNDS:
     }
 
     CheckMissingSources() {
-        elapsedTime := A_TickCount - this.appStartTime
-
         ; Check if any sources are still missing
         hasMissing := false
         foundNew := false
@@ -2518,25 +2565,40 @@ BACKGROUNDS:
             }
         }
 
-        ; Recheck if anything still missing
+        ; Recheck if anything still missing (only non-independent regions affect sync)
         hasMissing := false
         for i, r in this.regions {
+            ; Skip independent regions - they don't affect sync status
+            if r.HasOwnProp("independent") && r.independent
+                continue
             if !r.hSource && (r.sourceExe != "" || r.sourceTitle != "") {
                 hasMissing := true
                 break
             }
         }
 
-        ; If ANY source is missing, unregister ALL thumbnails (don't display partial)
+        ; If ANY synced source is missing, unregister only synced thumbnails
+        ; Independent regions always display if their source is available
         if hasMissing {
             for i, thumb in this.thumbnails {
-                if thumb {
-                    DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", thumb)
-                    this.thumbnails[i] := 0
+                if thumb && i <= this.regions.Length {
+                    r := this.regions[i]
+                    ; Only hide non-independent regions when sync fails
+                    if !(r.HasOwnProp("independent") && r.independent) {
+                        DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", thumb)
+                        this.thumbnails[i] := 0
+                    }
+                }
+            }
+            ; Register independent regions that have sources
+            for i, r in this.regions {
+                if r.HasOwnProp("independent") && r.independent && r.hSource {
+                    if i > this.thumbnails.Length || !this.thumbnails[i]
+                        this.RegisterThumbnailForRegion(i)
                 }
             }
         } else {
-            ; All sources found - register thumbnails if we found new ones
+            ; All synced sources found - register thumbnails if we found new ones
             if foundNew {
                 this.ReRegisterAllThumbnails()
             }
@@ -2544,6 +2606,8 @@ BACKGROUNDS:
 
         ; If no sources are missing, slow down to periodic checks (every 5 minutes)
         if !hasMissing {
+            ; Reset missing start time since all sources are now found
+            this.missingSourcesStartTime := 0
             if this.missingSourceCheckInterval != 300000 {
                 this.missingSourceCheckInterval := 300000
                 SetTimer(() => this.CheckMissingSources(), 300000)
@@ -2551,8 +2615,15 @@ BACKGROUNDS:
             return
         }
 
-        ; Sources still missing - check every 20 seconds for up to 5 minutes
-        if elapsedTime < 300000 {
+        ; Sources are missing - start tracking when they first went missing
+        if this.missingSourcesStartTime = 0
+            this.missingSourcesStartTime := A_TickCount
+
+        ; Calculate time since sources first went missing
+        missingElapsed := A_TickCount - this.missingSourcesStartTime
+
+        ; Sources still missing - check every 20 seconds for first 5 minutes
+        if missingElapsed < 300000 {
             if this.missingSourceCheckInterval != 20000 {
                 this.missingSourceCheckInterval := 20000
                 SetTimer(() => this.CheckMissingSources(), 20000)
@@ -2560,16 +2631,19 @@ BACKGROUNDS:
             return
         }
 
-        ; After 5 minutes with missing sources, switch to 5-minute interval
-        if this.missingSourceCheckInterval != 300000 {
-            this.missingSourceCheckInterval := 300000
-            SetTimer(() => this.CheckMissingSources(), 300000)
+        ; After 5 minutes, check every 5 minutes until 40 minutes
+        if missingElapsed < 2400000 {
+            if this.missingSourceCheckInterval != 300000 {
+                this.missingSourceCheckInterval := 300000
+                SetTimer(() => this.CheckMissingSources(), 300000)
+            }
+            return
         }
 
-        ; After 1 hour with missing sources, close the app
-        if elapsedTime >= 3600000 {
-            this.Cleanup()
-            return
+        ; After 40 minutes, check every 10 minutes indefinitely
+        if this.missingSourceCheckInterval != 600000 {
+            this.missingSourceCheckInterval := 600000
+            SetTimer(() => this.CheckMissingSources(), 600000)
         }
     }
 
@@ -3838,6 +3912,6 @@ BACKGROUNDS:
 
 ; ===== MAIN =====
 ; Each region can have its own source window
-region1 := {srcL: 0, srcT: 0, srcR: 400, srcB: 300, destL: 0, destT: 0, destR: 400, destB: 300, hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: "", filterColor: "", filterOpacity: 80}
+region1 := {srcL: 0, srcT: 0, srcR: 400, srcB: 300, destL: 0, destT: 0, destR: 400, destB: 300, hSource: 0, sourceTitle: "", sourceExe: "", sourceClass: "", filterColor: "", filterOpacity: 80, independent: false}
 
 viewer := ThumbnailViewer(region1)  ; Start with no source - will prompt to select
