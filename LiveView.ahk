@@ -3675,6 +3675,13 @@ BACKGROUNDS:
             overlay.Show("x" screenX " y" screenY " w" w " h" h " NoActivate")
             WinSetTransparent(r.filterOpacity, overlay.Hwnd)
         }
+
+        ; Force overlay to top during fullscreen modes
+        if (this.isFullscreen || this.isEditFullscreen) {
+            overlay := this.filterOverlays[index]
+            ; HWND_TOPMOST = -1, SWP_NOACTIVATE = 0x10, SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1
+            DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+        }
     }
 
     ForceRedraw() {
@@ -3685,6 +3692,12 @@ BACKGROUNDS:
         if (this.isEditFullscreen || this.isFullscreen) {
             ; HWND_TOPMOST = -1, SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOACTIVATE = 0x10
             DllCall("SetWindowPos", "Ptr", this.gui.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+
+            ; Keep filter overlays on top of main window
+            for overlay in this.filterOverlays {
+                if overlay
+                    DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+            }
         }
 
         ; Update "Not Live" overlay indicators
