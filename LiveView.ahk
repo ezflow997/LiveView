@@ -30,6 +30,9 @@ class ThumbnailViewer {
     ; Hidden sources tracking
     hiddenSources := Map()
 
+    ; Windows moved from other desktops (hwnd -> {origX, origY})
+    movedFromOtherDesktop := Map()
+
     ; Widgets
     widgets := []
     widgetControls := []
@@ -840,9 +843,9 @@ Backgrounds:
         }
         this.thumbnails := []
 
-        ; Restore any hidden sources (remove transparency)
-        for hwnd, _ in this.hiddenSources {
-            try WinSetTransparent("Off", hwnd)
+        ; Restore any hidden sources (restore position)
+        for hwnd, info in this.hiddenSources {
+            try WinMove(info.x, info.y, info.w, info.h, hwnd)
         }
         this.hiddenSources := Map()
 
@@ -912,6 +915,10 @@ Backgrounds:
                     }
                 }
             }
+
+            ; If window was found, check if it's on another desktop and bring it over
+            if r.hSource
+                this.BringWindowFromOtherDesktop(r.hSource)
 
             this.regions.Push(r)
         }
@@ -988,9 +995,9 @@ Backgrounds:
             }
             this.thumbnails := []
 
-            ; Restore any hidden sources (remove transparency)
-            for hwnd, _ in this.hiddenSources {
-                try WinSetTransparent("Off", hwnd)
+            ; Restore any hidden sources (restore position)
+            for hwnd, info in this.hiddenSources {
+                try WinMove(info.x, info.y, info.w, info.h, hwnd)
             }
             this.hiddenSources := Map()
 
@@ -1063,6 +1070,10 @@ Backgrounds:
                             }
                         }
                     }
+
+                    ; If window was found, check if it's on another desktop and bring it over
+                    if r.hSource
+                        this.BringWindowFromOtherDesktop(r.hSource)
 
                     this.regions.Push(r)
                 }
@@ -1189,15 +1200,42 @@ Backgrounds:
 
         r := this.regions[this.selectedRegion]
 
-        ; Restore old source window if it was hidden (remove transparency)
+        ; Restore old source window if it was hidden (restore position)
         if r.hSource && this.hiddenSources.Has(r.hSource) {
-            try WinSetTransparent("Off", r.hSource)
+            try {
+                info := this.hiddenSources[r.hSource]
+                WinMove(info.x, info.y, info.w, info.h, r.hSource)
+            }
             this.hiddenSources.Delete(r.hSource)
+        }
+
+        ; Check if window is from another desktop
+        isFromOtherDesktop := InStr(newTitle, "[Other Desktop] ") = 1
+        actualTitle := isFromOtherDesktop ? SubStr(newTitle, 18) : newTitle  ; Remove prefix
+
+        ; If from other desktop and not already moved, bring it to current desktop
+        if isFromOtherDesktop && !this.movedFromOtherDesktop.Has(newHwnd) {
+            try {
+                ; Store original position before moving
+                WinGetPos(&origX, &origY, &origW, &origH, newHwnd)
+                this.movedFromOtherDesktop[newHwnd] := {x: origX, y: origY, w: origW, h: origH}
+
+                ; Activate window to bring it to current desktop
+                WinActivate(newHwnd)
+                Sleep(100)
+
+                ; Move mostly off-screen (1 pixel visible to keep DWM live)
+                WinMove(this.GetBarelyOffScreenX(origW), origY,,, newHwnd)
+
+                this.ShowMessage("Window moved from other desktop (will restore on exit)")
+            } catch as e {
+                this.ShowMessage("Could not move window: " e.Message)
+            }
         }
 
         ; Update region's source
         r.hSource := newHwnd
-        r.sourceTitle := newTitle
+        r.sourceTitle := actualTitle  ; Store without prefix
         try r.sourceExe := WinGetProcessName(newHwnd)
         try r.sourceClass := WinGetClass(newHwnd)
 
@@ -1218,6 +1256,31 @@ Backgrounds:
         ; Re-register thumbnail for this region
         this.ReRegisterThumbnailForRegion(this.selectedRegion)
         this.UpdateThumbnail(this.selectedRegion)
+    }
+
+    ; Check if window is on another desktop and bring it to current if so
+    BringWindowFromOtherDesktop(hwnd) {
+        if this.movedFromOtherDesktop.Has(hwnd)
+            return  ; Already moved
+
+        ; Check if window is cloaked (on another virtual desktop)
+        cloaked := 0
+        DllCall("dwmapi\DwmGetWindowAttribute", "Ptr", hwnd, "UInt", 14, "UInt*", &cloaked, "UInt", 4)
+
+        if (cloaked & 0x2) {  ; DWM_CLOAKED_SHELL = on another desktop
+            try {
+                ; Store original position
+                WinGetPos(&origX, &origY, &origW, &origH, hwnd)
+                this.movedFromOtherDesktop[hwnd] := {x: origX, y: origY, w: origW, h: origH}
+
+                ; Activate to bring to current desktop
+                WinActivate(hwnd)
+                Sleep(100)
+
+                ; Move mostly off-screen (1 pixel visible to keep DWM live)
+                WinMove(this.GetBarelyOffScreenX(origW), origY,,, hwnd)
+            }
+        }
     }
 
     ReRegisterThumbnailForRegion(index) {
@@ -3201,20 +3264,23 @@ Backgrounds:
         }
 
         if anyHidden {
-            ; Restore all hidden sources - restore opacity
+            ; Restore all hidden sources - restore position
             for hwnd in uniqueSources {
                 if this.hiddenSources.Has(hwnd) {
-                    try WinSetTransparent("Off", hwnd)
+                    try {
+                        info := this.hiddenSources[hwnd]
+                        WinMove(info.x, info.y, info.w, info.h, hwnd)
+                    }
                     this.hiddenSources.Delete(hwnd)
                 }
             }
         } else {
-            ; Hide sources by making them fully transparent
-            ; Window stays in place and keeps rendering, just invisible
+            ; Hide sources by moving mostly off-screen (1 pixel visible to keep DWM live)
             for hwnd in uniqueSources {
                 try {
-                    this.hiddenSources[hwnd] := true
-                    WinSetTransparent(0, hwnd)
+                    WinGetPos(&x, &y, &w, &h, hwnd)
+                    this.hiddenSources[hwnd] := {x: x, y: y, w: w, h: h}
+                    WinMove(this.GetBarelyOffScreenX(w), y,,, hwnd)
                 }
             }
         }
@@ -3227,6 +3293,17 @@ Backgrounds:
         MonitorGet(MonitorGetPrimary(), &mLeft, &mTop, &mRight, &mBottom)
         this.canvasW := mRight - mLeft
         this.canvasH := mBottom - mTop
+    }
+
+    ; Get X position that keeps 1 pixel of a window on-screen (for DWM live capture)
+    GetBarelyOffScreenX(windowWidth) {
+        leftEdge := 0
+        Loop MonitorGetCount() {
+            MonitorGet(A_Index, &mLeft)
+            if (A_Index = 1 || mLeft < leftEdge)
+                leftEdge := mLeft
+        }
+        return leftEdge - windowWidth + 1
     }
 
     GetScaleFactor() {
@@ -3432,9 +3509,14 @@ Backgrounds:
         ; Shutdown GDI+
         this.ShutdownGDIPlus()
 
-        ; Restore all hidden source windows (remove transparency)
-        for hwnd, _ in this.hiddenSources {
-            try WinSetTransparent("Off", hwnd)
+        ; Restore all hidden source windows (restore position)
+        for hwnd, info in this.hiddenSources {
+            try WinMove(info.x, info.y, info.w, info.h, hwnd)
+        }
+
+        ; Restore windows that were moved from other desktops
+        for hwnd, info in this.movedFromOtherDesktop {
+            try WinMove(info.x, info.y, info.w, info.h, hwnd)
         }
 
         for thumb in this.thumbnails {
