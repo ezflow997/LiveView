@@ -588,44 +588,75 @@ class ThumbnailViewer {
     }
 
     ShowHelp() {
+        ; Close existing help window if open
+        if this.HasOwnProp("helpGui") && this.helpGui {
+            try this.helpGui.Destroy()
+            this.helpGui := ""
+            return
+        }
+
+        ; Create help window
+        helpGui := Gui("+AlwaysOnTop -MinimizeBox", "LiveView Controls")
+        this.helpGui := helpGui
+        helpGui.SetFont("s10", "Consolas")
+        helpGui.BackColor := "1a1a1a"
+
         help := "
         (
-CONTROLS:
+MOUSE (in viewer):
+  Left-click + drag    Move region
+  Right-click + drag   Resize region
 
-Mouse (in viewer):
-  Left-click + drag = Move region
-  Right-click + drag = Resize region
+KEYBOARD - Region/Widget:
+  Arrow keys           Move (10px)
+  Shift + Arrows       Resize (10px)
+  PgUp / PgDn          Change z-order
+  S                    Select source area
+  A                    Add new region
+  D                    Delete region
 
-Keyboard - Region/Widget:
-  Arrow keys = Move (10px)
-  Shift + Arrow keys = Resize (10px)
-  PgUp = Bring to front
-  PgDn = Send to back
-  S = Select source area
-  A = Add new region
-  D = Delete region
+KEYBOARD - App:
+  W                    Select source window
+  Ctrl+S               Save configuration
+  Ctrl+O               Load configuration
+  E                    Edit Fullscreen
+  F11                  Fullscreen (locked)
+  H                    Toggle selected source
+  Ctrl+H               Toggle all sources
+  Escape               Exit current mode
 
-Widgets (from menu):
-  Add Clock or Weather widget
+WIDGETS:
+  Add Clock or Weather from menu
   Select widget from dropdown
   Move/resize with arrow keys
 
-Keyboard - App:
-  W = Select source window
-  Ctrl+S = Save configuration
-  Ctrl+O = Load configuration
-  E = Edit Fullscreen
-  F11 = Fullscreen (locked)
-  H = Toggle selected source
-  Ctrl+H = Toggle all sources
-  Escape = Exit current mode
-
-Backgrounds:
+BACKGROUNDS:
   Put images in 'backgrounds' folder
   Formats: .jpg, .jpeg, .png, .bmp
   Images cycle every 30 minutes
         )"
-        this.ShowMessage(help, 10000)
+
+        helpGui.AddText("cWhite", help)
+        closeBtn := helpGui.AddButton("w100 Default", "Close")
+        closeBtn.OnEvent("Click", (*) => this.CloseHelp())
+
+        helpGui.OnEvent("Close", (*) => this.CloseHelp())
+        helpGui.OnEvent("Escape", (*) => this.CloseHelp())
+
+        ; Position near main window
+        try {
+            WinGetPos(&winX, &winY, &winW, &winH, this.gui.Hwnd)
+            helpGui.Show("x" (winX + winW + 10) " y" winY)
+        } catch {
+            helpGui.Show()
+        }
+    }
+
+    CloseHelp() {
+        if this.HasOwnProp("helpGui") && this.helpGui {
+            try this.helpGui.Destroy()
+            this.helpGui := ""
+        }
     }
 
     HandleEscape() {
