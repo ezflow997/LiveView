@@ -7,7 +7,8 @@ A lightweight AutoHotkey v2 application that creates live thumbnail views of win
 ### DWM Thumbnail Regions
 - Capture live thumbnails from any window using Windows DWM API
 - Multiple independent regions, each with its own source window
-- Draw custom source areas to capture specific portions of windows
+- **Virtual desktop support**: Select windows from other desktops (automatically moved off-screen and restored on exit)
+- Thumbnail preview for crop selection with zoom (scroll wheel) and pan (right-drag)
 - Move, resize, and reorder regions (bring to front/send to back)
 
 ### Widgets
@@ -42,7 +43,9 @@ A lightweight AutoHotkey v2 application that creates live thumbnail views of win
 
 **Mouse:**
 - Left-click + drag: Move region
-- Right-click + drag: Resize region
+- Right-click + drag: Resize region (on region/widget)
+- Right-click on empty space: Open context menu
+- Middle-click anywhere: Open context menu
 
 **Keyboard - Region/Widget:**
 - Arrow keys: Move (10px)
@@ -58,8 +61,21 @@ A lightweight AutoHotkey v2 application that creates live thumbnail views of win
 - Ctrl+O: Load configuration
 - E: Edit fullscreen
 - F11: Locked fullscreen
-- H: Toggle source visibility
+- H: Toggle source visibility (moves windows off-screen)
 - Escape: Exit current mode
+
+### Crop Selection Preview
+When selecting a source area (S key), a preview window opens:
+- **Left-drag**: Draw selection rectangle
+- **Scroll wheel**: Zoom in/out
+- **Right-drag**: Pan around when zoomed
+- **Escape**: Cancel selection
+
+### Other Desktop Windows
+Windows from other virtual desktops appear with `[Other Desktop]` prefix in the window selector. When selected:
+- Window is automatically moved to the current desktop
+- Window is positioned off-screen to avoid interference
+- On app exit, windows are restored to their original position
 
 ### Setting Up Backgrounds
 

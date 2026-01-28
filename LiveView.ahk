@@ -131,7 +131,8 @@ class ThumbnailViewer {
         this.fileMenu.Add("Edit Fullscreen`tE", (*) => this.ToggleEditFullscreen())
         this.fileMenu.Add("Fullscreen (Locked)`tF11", (*) => this.ToggleFullscreen())
         this.fileMenu.Add()
-        this.fileMenu.Add("Toggle Source Visibility`tH", (*) => this.ToggleSourceVisibility())
+        this.fileMenu.Add("Toggle Selected Source`tH", (*) => this.ToggleSelectedSourceVisibility())
+        this.fileMenu.Add("Toggle All Sources`tCtrl+H", (*) => this.ToggleSourceVisibility())
         this.fileMenu.Add()
         this.fileMenu.Add("Exit App", (*) => this.Cleanup())
 
@@ -176,7 +177,8 @@ class ThumbnailViewer {
         this.contextMenu.Add("Edit Fullscreen`tE", (*) => this.ToggleEditFullscreen())
         this.contextMenu.Add("Fullscreen (Locked)`tF11", (*) => this.ToggleFullscreen())
         this.contextMenu.Add()
-        this.contextMenu.Add("Toggle Source Visibility`tH", (*) => this.ToggleSourceVisibility())
+        this.contextMenu.Add("Toggle Selected Source`tH", (*) => this.ToggleSelectedSourceVisibility())
+        this.contextMenu.Add("Toggle All Sources`tCtrl+H", (*) => this.ToggleSourceVisibility())
         this.contextMenu.Add("Help", (*) => this.ShowHelp())
         this.contextMenu.Add()
         this.contextMenu.Add("Exit App", (*) => this.Cleanup())
@@ -249,7 +251,8 @@ class ThumbnailViewer {
 
         ; Hotkeys - only active when this window is focused
         HotIfWinActive("ahk_id " this.gui.Hwnd)
-        HotKey("h", (*) => this.ToggleSourceVisibility())
+        HotKey("h", (*) => this.ToggleSelectedSourceVisibility())
+        HotKey("^h", (*) => this.ToggleSourceVisibility())
         HotKey("Escape", (*) => this.HandleEscape())
         HotKey("e", (*) => this.ToggleEditFullscreen())
         HotKey("w", (*) => this.ShowWindowSelector())
@@ -522,12 +525,19 @@ class ThumbnailViewer {
         if !this.initialized
             return
 
-        ; Check if any region has a source
+        ; Check if any region has a source, and bring back any that moved to another desktop
         hasAnySource := false
         for r in this.regions {
             if r.hSource {
                 hasAnySource := true
-                break
+                ; Check if source moved to another desktop (cloaked)
+                if !this.movedFromOtherDesktop.Has(r.hSource) {
+                    cloaked := 0
+                    DllCall("dwmapi\DwmGetWindowAttribute", "Ptr", r.hSource, "UInt", 14, "UInt*", &cloaked, "UInt", 4)
+                    if (cloaked & 0x2) {  ; Window moved to another desktop
+                        this.BringWindowFromOtherDesktop(r.hSource)
+                    }
+                }
             }
         }
         if !hasAnySource
@@ -606,7 +616,8 @@ Keyboard - App:
   Ctrl+O = Load configuration
   E = Edit Fullscreen
   F11 = Fullscreen (locked)
-  H = Toggle source visibility
+  H = Toggle selected source
+  Ctrl+H = Toggle all sources
   Escape = Exit current mode
 
 Backgrounds:
@@ -1216,11 +1227,12 @@ Backgrounds:
         ; If from other desktop and not already moved, bring it to current desktop
         if isFromOtherDesktop && !this.movedFromOtherDesktop.Has(newHwnd) {
             try {
-                ; Store original position before moving
+                ; Store original position and desktop GUID before moving
                 WinGetPos(&origX, &origY, &origW, &origH, newHwnd)
-                this.movedFromOtherDesktop[newHwnd] := {x: origX, y: origY, w: origW, h: origH}
+                origDesktop := this.GetWindowDesktopId(newHwnd)
+                this.movedFromOtherDesktop[newHwnd] := {x: origX, y: origY, w: origW, h: origH, desktopId: origDesktop}
 
-                ; Move window to current desktop using COM interface
+                ; Move window to current desktop using ownership trick
                 if this.MoveWindowToCurrentDesktop(newHwnd) {
                     Sleep(100)
                     ; Move mostly off-screen (1 pixel visible to keep DWM live)
@@ -1260,29 +1272,39 @@ Backgrounds:
         this.UpdateThumbnail(this.selectedRegion)
     }
 
-    ; Move a window from another virtual desktop to the current one using COM
+    ; Move a window from another virtual desktop to the current one
     MoveWindowToCurrentDesktop(targetHwnd) {
-        ; IVirtualDesktopManager COM interface
-        CLSID := Buffer(16)
-        IID := Buffer(16)
+        ; Trick: Setting owner to a window on current desktop moves it here
+        DllCall("SetWindowLongPtr", "Ptr", targetHwnd, "Int", -8, "Ptr", this.gui.Hwnd)  ; GWL_HWNDPARENT = -8
+        DllCall("SetWindowLongPtr", "Ptr", targetHwnd, "Int", -8, "Ptr", 0)  ; Clear owner
+        return true
+    }
+
+    ; Get the virtual desktop GUID for a window
+    GetWindowDesktopId(hwnd) {
+        CLSID := Buffer(16), IID := Buffer(16)
         DllCall("ole32\CLSIDFromString", "WStr", "{aa509086-5ca9-4c25-8f95-589d3c07b48a}", "Ptr", CLSID)
         DllCall("ole32\CLSIDFromString", "WStr", "{a5cd92ff-29be-454c-8d04-d82879fb3f1b}", "Ptr", IID)
-
         pVDM := 0
-        hr := DllCall("ole32\CoCreateInstance", "Ptr", CLSID, "Ptr", 0, "UInt", 1, "Ptr", IID, "Ptr*", &pVDM)
-        if (hr != 0 || !pVDM)
-            return false
-
-        ; Get current desktop ID from our own window
+        if DllCall("ole32\CoCreateInstance", "Ptr", CLSID, "Ptr", 0, "UInt", 1, "Ptr", IID, "Ptr*", &pVDM) != 0
+            return 0
         desktopId := Buffer(16)
-        hr := ComCall(4, pVDM, "Ptr", this.gui.Hwnd, "Ptr", desktopId)  ; GetWindowDesktopId
-        if (hr != 0) {
-            ObjRelease(pVDM)
-            return false
-        }
+        hr := ComCall(4, pVDM, "Ptr", hwnd, "Ptr", desktopId)
+        ObjRelease(pVDM)
+        return (hr = 0) ? desktopId : 0
+    }
 
-        ; Move target window to current desktop
-        hr := ComCall(5, pVDM, "Ptr", targetHwnd, "Ptr", desktopId)  ; MoveWindowToDesktop
+    ; Move a window to a specific virtual desktop by GUID
+    MoveWindowToDesktopId(hwnd, desktopId) {
+        if !desktopId
+            return false
+        CLSID := Buffer(16), IID := Buffer(16)
+        DllCall("ole32\CLSIDFromString", "WStr", "{aa509086-5ca9-4c25-8f95-589d3c07b48a}", "Ptr", CLSID)
+        DllCall("ole32\CLSIDFromString", "WStr", "{a5cd92ff-29be-454c-8d04-d82879fb3f1b}", "Ptr", IID)
+        pVDM := 0
+        if DllCall("ole32\CoCreateInstance", "Ptr", CLSID, "Ptr", 0, "UInt", 1, "Ptr", IID, "Ptr*", &pVDM) != 0
+            return false
+        hr := ComCall(5, pVDM, "Ptr", hwnd, "Ptr", desktopId)
         ObjRelease(pVDM)
         return (hr = 0)
     }
@@ -1298,11 +1320,12 @@ Backgrounds:
 
         if (cloaked & 0x2) {  ; DWM_CLOAKED_SHELL = on another desktop
             try {
-                ; Store original position
+                ; Store original position and desktop GUID
                 WinGetPos(&origX, &origY, &origW, &origH, hwnd)
-                this.movedFromOtherDesktop[hwnd] := {x: origX, y: origY, w: origW, h: origH}
+                origDesktop := this.GetWindowDesktopId(hwnd)
+                this.movedFromOtherDesktop[hwnd] := {x: origX, y: origY, w: origW, h: origH, desktopId: origDesktop}
 
-                ; Move window to current desktop using COM interface
+                ; Move window to current desktop using ownership trick
                 if this.MoveWindowToCurrentDesktop(hwnd) {
                     Sleep(100)
                     ; Move mostly off-screen (1 pixel visible to keep DWM live)
@@ -3269,50 +3292,94 @@ Backgrounds:
         this.ShowMessage("Configuration copied to clipboard")
     }
 
+    ; Check if a source is hidden (either in hiddenSources or movedFromOtherDesktop)
+    IsSourceHidden(hwnd) {
+        return this.hiddenSources.Has(hwnd) || this.movedFromOtherDesktop.Has(hwnd)
+    }
+
+    ; Restore a hidden source window to its original position (and desktop if applicable)
+    RestoreHiddenSource(hwnd) {
+        if this.hiddenSources.Has(hwnd) {
+            try {
+                info := this.hiddenSources[hwnd]
+                WinMove(info.x, info.y, info.w, info.h, hwnd)
+            }
+            this.hiddenSources.Delete(hwnd)
+            return true
+        }
+        if this.movedFromOtherDesktop.Has(hwnd) {
+            try {
+                info := this.movedFromOtherDesktop[hwnd]
+                WinMove(info.x, info.y, info.w, info.h, hwnd)
+                if info.desktopId
+                    this.MoveWindowToDesktopId(hwnd, info.desktopId)
+            }
+            this.movedFromOtherDesktop.Delete(hwnd)
+            return true
+        }
+        return false
+    }
+
+    ; Hide a source window (move mostly off-screen, 1 pixel visible)
+    HideSource(hwnd) {
+        if this.IsSourceHidden(hwnd)
+            return
+        try {
+            WinGetPos(&x, &y, &w, &h, hwnd)
+            this.hiddenSources[hwnd] := {x: x, y: y, w: w, h: h}
+            WinMove(this.GetBarelyOffScreenX(w), y,,, hwnd)
+        }
+    }
+
+    ; Toggle visibility for selected region's source only (H key)
+    ToggleSelectedSourceVisibility() {
+        if this.selectedRegion < 1 || this.selectedRegion > this.regions.Length
+            return
+
+        r := this.regions[this.selectedRegion]
+        if !r.hSource
+            return
+
+        ; If hidden, restore it
+        if this.IsSourceHidden(r.hSource) {
+            this.RestoreHiddenSource(r.hSource)
+        } else {
+            ; Hide it
+            this.HideSource(r.hSource)
+        }
+    }
+
+    ; Toggle visibility for all source windows (Ctrl+H)
     ToggleSourceVisibility() {
-        ; Collect unique source windows (only on current desktop, not cloaked)
+        ; Collect unique source windows
         uniqueSources := Map()
         for r in this.regions {
             if r.hSource && !uniqueSources.Has(r.hSource) {
-                ; Check if window is cloaked (on another virtual desktop)
-                cloaked := 0
-                DllCall("dwmapi\DwmGetWindowAttribute", "Ptr", r.hSource, "UInt", 14, "UInt*", &cloaked, "UInt", 4)
-                if !cloaked
-                    uniqueSources[r.hSource] := true
+                uniqueSources[r.hSource] := true
             }
         }
 
         if uniqueSources.Count = 0
             return
 
-        ; Check if any sources are hidden
+        ; Check if any sources are hidden (either type)
         anyHidden := false
         for hwnd in uniqueSources {
-            if this.hiddenSources.Has(hwnd) {
+            if this.IsSourceHidden(hwnd) {
                 anyHidden := true
                 break
             }
         }
 
         if anyHidden {
-            ; Restore all hidden sources - restore position
+            ; Restore all hidden sources
             for hwnd in uniqueSources {
-                if this.hiddenSources.Has(hwnd) {
-                    try {
-                        info := this.hiddenSources[hwnd]
-                        WinMove(info.x, info.y, info.w, info.h, hwnd)
-                    }
-                    this.hiddenSources.Delete(hwnd)
-                }
+                this.RestoreHiddenSource(hwnd)
             }
         } else {
-            ; Hide sources by moving mostly off-screen (1 pixel visible to keep DWM live)
+            ; Hide all sources
             for hwnd in uniqueSources {
-                try {
-                    WinGetPos(&x, &y, &w, &h, hwnd)
-                    this.hiddenSources[hwnd] := {x: x, y: y, w: w, h: h}
-                    WinMove(this.GetBarelyOffScreenX(w), y,,, hwnd)
-                }
+                this.HideSource(hwnd)
             }
         }
     }
@@ -3547,7 +3614,13 @@ Backgrounds:
 
         ; Restore windows that were moved from other desktops
         for hwnd, info in this.movedFromOtherDesktop {
-            try WinMove(info.x, info.y, info.w, info.h, hwnd)
+            try {
+                ; First restore position
+                WinMove(info.x, info.y, info.w, info.h, hwnd)
+                ; Then move back to original desktop
+                if info.desktopId
+                    this.MoveWindowToDesktopId(hwnd, info.desktopId)
+            }
         }
 
         for thumb in this.thumbnails {
