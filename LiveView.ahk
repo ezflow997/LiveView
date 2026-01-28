@@ -44,6 +44,13 @@ class ThumbnailViewer {
     gdipToken := 0
     bgBitmap := 0
 
+    ; Canvas scaling (design resolution for fullscreen preview)
+    canvasW := 1920
+    canvasH := 1080
+
+    ; Not Live overlay controls
+    notLiveOverlays := []
+
     ; Fullscreen click tracking
     fsClickCount := 0
     fsLastClickTime := 0
@@ -75,6 +82,9 @@ class ThumbnailViewer {
         this.gui.BackColor := "000000"
         this.gui.OnEvent("Close", (*) => this.Cleanup())
         this.gui.OnEvent("Size", (*) => this.OnResize())
+
+        ; Initialize canvas to primary monitor resolution
+        this.InitCanvas()
 
         ; Initialize GDI+
         this.InitGDIPlus()
@@ -621,15 +631,14 @@ Backgrounds:
     GetWindowList() {
         windows := []
 
-        ; Use WinGetList to get all visible windows
+        ; Enable detection of windows on other virtual desktops
+        DetectHiddenWindows(true)
+
+        ; Use WinGetList to get all windows
         ids := WinGetList()
 
         for hwnd in ids {
             try {
-                ; Skip invisible windows
-                if !DllCall("IsWindowVisible", "Ptr", hwnd)
-                    continue
-
                 ; Get window title
                 title := WinGetTitle(hwnd)
                 if title = ""
@@ -643,15 +652,25 @@ Backgrounds:
                 if title = "Program Manager" || title = "Windows Input Experience" || title = "Settings"
                     continue
 
-                ; Skip windows without a visible presence (tool windows, etc.)
+                ; Check window style - must have WS_VISIBLE
                 style := WinGetStyle(hwnd)
                 if (style & 0x10000000) = 0  ; WS_VISIBLE
+                    continue
+
+                ; Check if on another virtual desktop (cloaked)
+                cloaked := 0
+                DllCall("dwmapi\DwmGetWindowAttribute", "Ptr", hwnd, "UInt", 14, "UInt*", &cloaked, "UInt", 4)
+
+                ; Include if visible OR cloaked (other desktop)
+                isVisible := DllCall("IsWindowVisible", "Ptr", hwnd)
+                if !isVisible && !cloaked
                     continue
 
                 windows.Push({hwnd: hwnd, title: title})
             }
         }
 
+        DetectHiddenWindows(false)
         return windows
     }
 
@@ -788,9 +807,9 @@ Backgrounds:
         }
         this.thumbnails := []
 
-        ; Restore any hidden sources
-        for hwnd, savedPos in this.hiddenSources {
-            try WinMove(savedPos.x, savedPos.y, savedPos.w, savedPos.h, hwnd)
+        ; Restore any hidden sources (remove transparency)
+        for hwnd, _ in this.hiddenSources {
+            try WinSetTransparent("Off", hwnd)
         }
         this.hiddenSources := Map()
 
@@ -933,9 +952,9 @@ Backgrounds:
             }
             this.thumbnails := []
 
-            ; Restore any hidden sources
-            for hwnd, savedPos in this.hiddenSources {
-                try WinMove(savedPos.x, savedPos.y, savedPos.w, savedPos.h, hwnd)
+            ; Restore any hidden sources (remove transparency)
+            for hwnd, _ in this.hiddenSources {
+                try WinSetTransparent("Off", hwnd)
             }
             this.hiddenSources := Map()
 
@@ -1131,10 +1150,9 @@ Backgrounds:
 
         r := this.regions[this.selectedRegion]
 
-        ; Restore old source window if it was hidden
+        ; Restore old source window if it was hidden (remove transparency)
         if r.hSource && this.hiddenSources.Has(r.hSource) {
-            savedPos := this.hiddenSources[r.hSource]
-            try WinMove(savedPos.x, savedPos.y, savedPos.w, savedPos.h, r.hSource)
+            try WinSetTransparent("Off", r.hSource)
             this.hiddenSources.Delete(r.hSource)
         }
 
@@ -1504,10 +1522,9 @@ Backgrounds:
         if this.isFullscreen
             this.ToggleFullscreen()
 
-        ; Bring source to front if hidden
+        ; Bring source to front if hidden (restore transparency)
         if this.hiddenSources.Has(r.hSource) {
-            savedPos := this.hiddenSources[r.hSource]
-            WinMove(savedPos.x, savedPos.y, savedPos.w, savedPos.h, r.hSource)
+            try WinSetTransparent("Off", r.hSource)
             this.hiddenSources.Delete(r.hSource)
         }
 
@@ -2801,11 +2818,16 @@ Backgrounds:
     }
 
     ToggleSourceVisibility() {
-        ; Collect unique source windows
+        ; Collect unique source windows (only on current desktop, not cloaked)
         uniqueSources := Map()
         for r in this.regions {
-            if r.hSource && !uniqueSources.Has(r.hSource)
-                uniqueSources[r.hSource] := true
+            if r.hSource && !uniqueSources.Has(r.hSource) {
+                ; Check if window is cloaked (on another virtual desktop)
+                cloaked := 0
+                DllCall("dwmapi\DwmGetWindowAttribute", "Ptr", r.hSource, "UInt", 14, "UInt*", &cloaked, "UInt", 4)
+                if !cloaked
+                    uniqueSources[r.hSource] := true
+            }
         }
 
         if uniqueSources.Count = 0
@@ -2821,24 +2843,72 @@ Backgrounds:
         }
 
         if anyHidden {
-            ; Restore all hidden sources
+            ; Restore all hidden sources - restore opacity
             for hwnd in uniqueSources {
                 if this.hiddenSources.Has(hwnd) {
-                    savedPos := this.hiddenSources[hwnd]
-                    try WinMove(savedPos.x, savedPos.y, savedPos.w, savedPos.h, hwnd)
+                    try WinSetTransparent("Off", hwnd)
                     this.hiddenSources.Delete(hwnd)
                 }
             }
         } else {
-            ; Hide all unique sources
+            ; Hide sources by making them fully transparent
+            ; Window stays in place and keeps rendering, just invisible
             for hwnd in uniqueSources {
                 try {
-                    WinGetPos(&x, &y, &w, &h, hwnd)
-                    this.hiddenSources[hwnd] := {x: x, y: y, w: w, h: h}
-                    WinMove(-32000, -32000, w, h, hwnd)
+                    this.hiddenSources[hwnd] := true
+                    WinSetTransparent(0, hwnd)
                 }
             }
         }
+    }
+
+    ; === Canvas Scaling Methods ===
+
+    InitCanvas() {
+        ; Set canvas to primary monitor resolution
+        MonitorGet(MonitorGetPrimary(), &mLeft, &mTop, &mRight, &mBottom)
+        this.canvasW := mRight - mLeft
+        this.canvasH := mBottom - mTop
+    }
+
+    GetScaleFactor() {
+        ; Returns scale factor: windowSize / canvasSize
+        ; In fullscreen modes, scale is 1.0 (no scaling)
+        if this.isFullscreen || this.isEditFullscreen
+            return 1.0
+
+        this.gui.GetClientPos(,, &cw, &ch)
+        ; Use height-based scaling to maintain aspect ratio, leave space for controls
+        availableH := ch - 40  ; Space for dropdown
+        scaleX := cw / this.canvasW
+        scaleY := availableH / this.canvasH
+        return Min(scaleX, scaleY)
+    }
+
+    WindowToCanvas(x, y) {
+        ; Convert window coordinates to canvas coordinates
+        scale := this.GetScaleFactor()
+        if scale = 0
+            scale := 1
+        return {x: Round(x / scale), y: Round(y / scale)}
+    }
+
+    IsSourceLive(hwnd) {
+        ; Check if a source window is being rendered (live) or frozen
+        if !hwnd
+            return false
+
+        ; Check if window is minimized
+        if DllCall("IsIconic", "Ptr", hwnd)
+            return false
+
+        ; Check if window is cloaked (on another virtual desktop)
+        cloaked := 0
+        DllCall("dwmapi\DwmGetWindowAttribute", "Ptr", hwnd, "UInt", 14, "UInt*", &cloaked, "UInt", 4)
+        if cloaked
+            return false
+
+        return true
     }
 
     UpdateAllThumbnails() {
@@ -2864,15 +2934,19 @@ Backgrounds:
         this.gui.GetClientPos(,, &cw, &ch)
         maxBottom := (this.isFullscreen || this.isEditFullscreen) ? ch : ch - 40
 
-        ; Clip destination to not overlap dropdown area
-        destB := Min(r.destB, maxBottom)
+        ; Scale destination coordinates from canvas to window
+        scale := this.GetScaleFactor()
+        scaledDestL := Round(r.destL * scale)
+        scaledDestT := Round(r.destT * scale)
+        scaledDestR := Round(r.destR * scale)
+        scaledDestB := Min(Round(r.destB * scale), maxBottom)
 
         props := Buffer(48, 0)
         NumPut("UInt", 0x1F, props, 0)
-        NumPut("Int", r.destL, props, 4)
-        NumPut("Int", r.destT, props, 8)
-        NumPut("Int", r.destR, props, 12)
-        NumPut("Int", destB, props, 16)
+        NumPut("Int", scaledDestL, props, 4)
+        NumPut("Int", scaledDestT, props, 8)
+        NumPut("Int", scaledDestR, props, 12)
+        NumPut("Int", scaledDestB, props, 16)
         NumPut("Int", r.srcL, props, 20)
         NumPut("Int", r.srcT, props, 24)
         NumPut("Int", r.srcR, props, 28)
@@ -2892,6 +2966,56 @@ Backgrounds:
         if (this.isEditFullscreen || this.isFullscreen) {
             ; HWND_TOPMOST = -1, SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOACTIVATE = 0x10
             DllCall("SetWindowPos", "Ptr", this.gui.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+        }
+
+        ; Update "Not Live" overlay indicators
+        this.UpdateNotLiveOverlays()
+    }
+
+    UpdateNotLiveOverlays() {
+        ; Ensure we have enough overlay controls
+        while this.notLiveOverlays.Length < this.regions.Length {
+            ; Create overlay text control (initially hidden) with dark background
+            this.gui.SetFont("s12 cFF4444 Bold", "Segoe UI")
+            overlay := this.gui.AddText("w100 h24 Center Hidden Background222222 +0x200", "NOT LIVE")
+            this.notLiveOverlays.Push(overlay)
+            this.gui.SetFont()
+        }
+
+        ; Get scaling info
+        scale := this.GetScaleFactor()
+
+        ; Update each overlay
+        for i, r in this.regions {
+            if i > this.notLiveOverlays.Length
+                continue
+
+            overlay := this.notLiveOverlays[i]
+
+            ; Check if source exists and is not live
+            if r.hSource && !this.IsSourceLive(r.hSource) {
+                ; Calculate position (center of region)
+                scaledL := Round(r.destL * scale)
+                scaledT := Round(r.destT * scale)
+                scaledR := Round(r.destR * scale)
+                scaledB := Round(r.destB * scale)
+
+                regionW := scaledR - scaledL
+                regionH := scaledB - scaledT
+                overlayW := 100
+                overlayH := 24
+                overlayX := scaledL + (regionW - overlayW) // 2
+                overlayY := scaledT + (regionH - overlayH) // 2
+
+                overlay.Move(overlayX, overlayY, overlayW, overlayH)
+                overlay.Visible := true
+
+                ; Bring overlay to front
+                DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", 0,
+                    "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+            } else {
+                overlay.Visible := false
+            }
         }
     }
 
@@ -2950,9 +3074,9 @@ Backgrounds:
         ; Shutdown GDI+
         this.ShutdownGDIPlus()
 
-        ; Restore all hidden source windows
-        for hwnd, savedPos in this.hiddenSources {
-            try WinMove(savedPos.x, savedPos.y, savedPos.w, savedPos.h, hwnd)
+        ; Restore all hidden source windows (remove transparency)
+        for hwnd, _ in this.hiddenSources {
+            try WinSetTransparent("Off", hwnd)
         }
 
         for thumb in this.thumbnails {
