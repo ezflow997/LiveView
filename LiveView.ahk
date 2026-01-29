@@ -1,6 +1,9 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
+; Enable Per-Monitor DPI Awareness for proper scaling
+try DllCall("SetThreadDpiAwarenessContext", "Ptr", -3)
+
 class ThumbnailViewer {
     thumbnails := []
     regions := []       ; Each region now has: srcL, srcT, srcR, srcB, destL, destT, destR, destB, hSource, sourceTitle, sourceExe
@@ -57,6 +60,19 @@ class ThumbnailViewer {
 
     ; Filter overlay controls for each region
     filterOverlays := []
+
+    ; Color enhancer border overlays for each region (array of 4 borders per region)
+    colorEnhancerOverlays := []
+    colorEnhancerVisible := []  ; Track which borders are currently visible
+    colorEnhancerDetected := []  ; Cache detection results
+    lastColorEnhancerUpdate := 0  ; Throttle detection
+
+    ; Performance cache
+    cachedScale := 1.0
+    cachedClientW := 0
+    cachedClientH := 0
+    cachedIsActive := false
+    lastCacheUpdate := 0
 
     ; Preview window for source selection
     previewGui := ""
@@ -191,6 +207,13 @@ class ThumbnailViewer {
         this.filterMenu.Add()
         this.filterMenu.Add("Custom...", (*) => this.SetCustomFilter())
 
+        ; Create Color Enhancer submenu
+        this.colorEnhancerMenu := Menu()
+        this.colorEnhancerMenu.Add("Configure...", (*) => this.ConfigureColorEnhancer())
+        this.colorEnhancerMenu.Add()
+        this.colorEnhancerMenu.Add("Enable", (*) => this.ToggleColorEnhancer(true))
+        this.colorEnhancerMenu.Add("Disable", (*) => this.ToggleColorEnhancer(false))
+
         ; Create right-click context menu (combines all menus)
         this.contextMenu := Menu()
         this.contextMenu.Add("Select Source Window`tW", (*) => this.ShowWindowSelector())
@@ -204,6 +227,7 @@ class ThumbnailViewer {
         this.contextMenu.Add("Send to Back`tPgDn", (*) => this.SendToBack())
         this.contextMenu.Add()
         this.contextMenu.Add("Region Filter", this.filterMenu)
+        this.contextMenu.Add("Color Enhancer", this.colorEnhancerMenu)
         this.contextMenu.Add("Widgets", this.widgetMenu)
         this.contextMenu.Add()
         this.contextMenu.Add("Save Config`tCtrl+S", (*) => this.SaveConfig())
@@ -260,7 +284,10 @@ class ThumbnailViewer {
         SetTimer(() => this.AnimateBackground(), 1000)
 
         ; Periodic redraw timer to keep controls visible when window is inactive
-        SetTimer(() => this.ForceRedraw(), 500)
+        SetTimer(() => this.ForceRedraw(), 200)
+
+        ; Color enhancer detection timer
+        SetTimer(() => this.UpdateColorEnhancers(), 100)
 
         ; Check for missing source windows periodically (starts immediately)
         SetTimer(() => this.CheckMissingSources(), -1000)
@@ -331,7 +358,7 @@ class ThumbnailViewer {
         this.SendBackgroundToBack()
 
         ; Continuous thumbnail refresh to handle window movement
-        SetTimer(() => this.RefreshThumbnails(), 16)  ; ~60fps
+        SetTimer(() => this.RefreshThumbnails(), 33)  ; ~30fps
 
         ; Try to load default config silently
         defaultConfig := A_ScriptDir "\LiveViewConfig.ini"
@@ -558,27 +585,35 @@ class ThumbnailViewer {
 
     RefreshThumbnails() {
         static lastX := -99999, lastY := -99999, lastW := 0, lastH := 0
+        static lastCloakedCheck := 0
 
         if !this.initialized
             return
 
-        ; Check if any region has a source, and bring back any that moved to another desktop
+        ; Check if any region has a source
         hasAnySource := false
         for r in this.regions {
             if r.hSource {
                 hasAnySource := true
-                ; Check if source moved to another desktop (cloaked)
-                if !this.movedFromOtherDesktop.Has(r.hSource) {
-                    cloaked := 0
-                    DllCall("dwmapi\DwmGetWindowAttribute", "Ptr", r.hSource, "UInt", 14, "UInt*", &cloaked, "UInt", 4)
-                    if (cloaked & 0x2) {  ; Window moved to another desktop
-                        this.BringWindowFromOtherDesktop(r.hSource)
-                    }
-                }
+                break
             }
         }
         if !hasAnySource
             return
+        
+        ; Only check for cloaked windows every 500ms (expensive DllCall)
+        now := A_TickCount
+        if (now - lastCloakedCheck) > 500 {
+            lastCloakedCheck := now
+            for r in this.regions {
+                if r.hSource && !this.movedFromOtherDesktop.Has(r.hSource) {
+                    cloaked := 0
+                    DllCall("dwmapi\DwmGetWindowAttribute", "Ptr", r.hSource, "UInt", 14, "UInt*", &cloaked, "UInt", 4)
+                    if (cloaked & 0x2)
+                        this.BringWindowFromOtherDesktop(r.hSource)
+                }
+            }
+        }
 
         try {
             WinGetPos(&x, &y, &w, &h, this.gui.Hwnd)
@@ -593,7 +628,7 @@ class ThumbnailViewer {
                 DllCall("dwmapi\DwmFlush")
 
                 ; Force window redraw
-                DllCall("RedrawWindow", "Ptr", this.gui.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0100 | 0x0001)  ; RDW_UPDATENOW | RDW_INVALIDATE
+                DllCall("RedrawWindow", "Ptr", this.gui.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0101)  ; RDW_UPDATENOW | RDW_INVALIDATE
             }
         }
     }
@@ -874,6 +909,20 @@ INDEPENDENT REGIONS:
             IniWrite(r.filterColor, selectedFile, section, "filterColor")
             IniWrite(r.filterOpacity, selectedFile, section, "filterOpacity")
 
+            ; Save color enhancer settings
+            if r.HasOwnProp("colorEnhancer") {
+                ce := r.colorEnhancer
+                IniWrite(ce.enabled ? 1 : 0, selectedFile, section, "ceEnabled")
+                IniWrite(ce.targetColor, selectedFile, section, "ceTargetColor")
+                IniWrite(ce.tolerance, selectedFile, section, "ceTolerance")
+                IniWrite(ce.HasOwnProp("sampleX") ? ce.sampleX : 0, selectedFile, section, "ceSampleX")
+                IniWrite(ce.HasOwnProp("sampleY") ? ce.sampleY : 0, selectedFile, section, "ceSampleY")
+                IniWrite(ce.borderColor, selectedFile, section, "ceBorderColor")
+                IniWrite(ce.borderThickness, selectedFile, section, "ceBorderThickness")
+                IniWrite(ce.flash ? 1 : 0, selectedFile, section, "ceFlash")
+                IniWrite(ce.flashSpeed, selectedFile, section, "ceFlashSpeed")
+            }
+
             ; Save independent sync setting
             IniWrite(r.HasOwnProp("independent") && r.independent ? 1 : 0, selectedFile, section, "independent")
         }
@@ -951,6 +1000,17 @@ INDEPENDENT REGIONS:
         }
         this.filterOverlays := []
 
+        ; Clear color enhancer overlays
+        for borders in this.colorEnhancerOverlays {
+            if borders is Array {
+                for border in borders {
+                    if border
+                        try border.Destroy()
+                }
+            }
+        }
+        this.colorEnhancerOverlays := []
+
         ; Enumerate all windows once (including other virtual desktops)
         allWindows := []
         prevHidden := A_DetectHiddenWindows
@@ -987,6 +1047,40 @@ INDEPENDENT REGIONS:
             r.sourceClass := IniRead(selectedFile, section, "sourceClass", "")
             r.filterColor := IniRead(selectedFile, section, "filterColor", "")
             r.filterOpacity := Integer(IniRead(selectedFile, section, "filterOpacity", "80"))
+            
+            ; Load color enhancer settings
+            ceEnabled := Integer(IniRead(selectedFile, section, "ceEnabled", "0"))
+            if ceEnabled || IniRead(selectedFile, section, "ceTargetColor", "") != "" {
+                ; Check for new sampleX/Y or old samplePos
+                sampleX := IniRead(selectedFile, section, "ceSampleX", "")
+                sampleY := IniRead(selectedFile, section, "ceSampleY", "")
+                if sampleX = "" || sampleY = "" {
+                    ; Migrate from old samplePos
+                    samplePos := IniRead(selectedFile, section, "ceSamplePos", "top-left")
+                    switch samplePos {
+                        case "top-right": sampleX := 100, sampleY := 0
+                        case "center": sampleX := 50, sampleY := 50
+                        case "bottom-left": sampleX := 0, sampleY := 100
+                        case "bottom-right": sampleX := 100, sampleY := 100
+                        default: sampleX := 0, sampleY := 0
+                    }
+                } else {
+                    sampleX := Integer(sampleX)
+                    sampleY := Integer(sampleY)
+                }
+                r.colorEnhancer := {
+                    enabled: ceEnabled = 1,
+                    targetColor: IniRead(selectedFile, section, "ceTargetColor", "FF0000"),
+                    tolerance: Integer(IniRead(selectedFile, section, "ceTolerance", "30")),
+                    sampleX: sampleX,
+                    sampleY: sampleY,
+                    borderColor: IniRead(selectedFile, section, "ceBorderColor", "00FF00"),
+                    borderThickness: Integer(IniRead(selectedFile, section, "ceBorderThickness", "4")),
+                    flash: Integer(IniRead(selectedFile, section, "ceFlash", "0")) = 1,
+                    flashSpeed: Integer(IniRead(selectedFile, section, "ceFlashSpeed", "500"))
+                }
+            }
+            
             r.independent := Integer(IniRead(selectedFile, section, "independent", "0")) = 1
             r.hSource := 0
 
@@ -1113,6 +1207,17 @@ INDEPENDENT REGIONS:
             }
             this.filterOverlays := []
 
+            ; Clear color enhancer overlays
+            for borders in this.colorEnhancerOverlays {
+                if borders is Array {
+                    for border in borders {
+                        if border
+                            try border.Destroy()
+                    }
+                }
+            }
+            this.colorEnhancerOverlays := []
+
             ; Enumerate all windows once (including other virtual desktops)
             allWindows := []
             prevHidden := A_DetectHiddenWindows
@@ -1150,6 +1255,40 @@ INDEPENDENT REGIONS:
                     r.sourceClass := IniRead(configFile, section, "sourceClass", "")
                     r.filterColor := IniRead(configFile, section, "filterColor", "")
                     r.filterOpacity := Integer(IniRead(configFile, section, "filterOpacity", "80"))
+                    
+                    ; Load color enhancer settings
+                    ceEnabled := Integer(IniRead(configFile, section, "ceEnabled", "0"))
+                    if ceEnabled || IniRead(configFile, section, "ceTargetColor", "") != "" {
+                        ; Check for new sampleX/Y or old samplePos
+                        sampleX := IniRead(configFile, section, "ceSampleX", "")
+                        sampleY := IniRead(configFile, section, "ceSampleY", "")
+                        if sampleX = "" || sampleY = "" {
+                            ; Migrate from old samplePos
+                            samplePos := IniRead(configFile, section, "ceSamplePos", "top-left")
+                            switch samplePos {
+                                case "top-right": sampleX := 100, sampleY := 0
+                                case "center": sampleX := 50, sampleY := 50
+                                case "bottom-left": sampleX := 0, sampleY := 100
+                                case "bottom-right": sampleX := 100, sampleY := 100
+                                default: sampleX := 0, sampleY := 0
+                            }
+                        } else {
+                            sampleX := Integer(sampleX)
+                            sampleY := Integer(sampleY)
+                        }
+                        r.colorEnhancer := {
+                            enabled: ceEnabled = 1,
+                            targetColor: IniRead(configFile, section, "ceTargetColor", "FF0000"),
+                            tolerance: Integer(IniRead(configFile, section, "ceTolerance", "30")),
+                            sampleX: sampleX,
+                            sampleY: sampleY,
+                            borderColor: IniRead(configFile, section, "ceBorderColor", "00FF00"),
+                            borderThickness: Integer(IniRead(configFile, section, "ceBorderThickness", "4")),
+                            flash: Integer(IniRead(configFile, section, "ceFlash", "0")) = 1,
+                            flashSpeed: Integer(IniRead(configFile, section, "ceFlashSpeed", "500"))
+                        }
+                    }
+                    
                     r.independent := Integer(IniRead(configFile, section, "independent", "0")) = 1
                     r.hSource := 0
 
@@ -1544,7 +1683,7 @@ INDEPENDENT REGIONS:
     }
 
     SetupMouseTracking() {
-        SetTimer(() => this.CheckViewerMouse(), 16)
+        SetTimer(() => this.CheckViewerMouse(), 33)
     }
 
     CheckViewerMouse() {
@@ -1579,7 +1718,7 @@ INDEPENDENT REGIONS:
         rDown := GetKeyState("RButton", "P")
 
         ; Only track mouse when LiveView is the active window (editing mode)
-        if !this.isDragging && !WinActive("ahk_id " this.gui.Hwnd) {
+        if !this.isDragging && !this.IsWindowActive() {
             wasLDown := lDown
             wasRDown := rDown
             return
@@ -1610,8 +1749,10 @@ INDEPENDENT REGIONS:
             return
         }
 
-        ; Get client size and check bounds
-        this.gui.GetClientPos(,, &cw, &ch)
+        ; Get client size (cached)
+        clientSize := this.GetCachedClientSize()
+        cw := clientSize.w
+        ch := clientSize.h
 
         ; Must be inside client area and not on dropdown at bottom
         if (localX < 0 || localY < 0 || localX >= cw || localY >= ch - 40) {
@@ -1894,7 +2035,7 @@ INDEPENDENT REGIONS:
         this.wheelHandler := ObjBindMethod(this, "OnThumbnailWheel")
         OnMessage(0x020A, this.wheelHandler)  ; WM_MOUSEWHEEL
 
-        SetTimer(() => this.CheckThumbnailSelection(), 16)
+        SetTimer(() => this.CheckThumbnailSelection(), 33)
     }
 
     OnThumbnailWheel(wParam, lParam, msg, hwnd) {
@@ -2429,6 +2570,715 @@ INDEPENDENT REGIONS:
         }
     }
 
+    ; ===== COLOR ENHANCER METHODS =====
+
+    ConfigureColorEnhancer() {
+        if this.selectedRegion > this.regions.Length
+            return
+
+        r := this.regions[this.selectedRegion]
+        
+        ; Ensure colorEnhancer property exists with defaults
+        if !r.HasOwnProp("colorEnhancer")
+            r.colorEnhancer := {enabled: false, targetColor: "FF0000", tolerance: 30, borderColor: "00FF00", borderThickness: 4, flash: false, flashSpeed: 500, sampleX: 0, sampleY: 0}
+        
+        ce := r.colorEnhancer
+        
+        ; Migrate from old samplePos to new sampleX/sampleY
+        if ce.HasOwnProp("samplePos") && !ce.HasOwnProp("sampleX") {
+            switch ce.samplePos {
+                case "top-left":
+                    ce.sampleX := 0, ce.sampleY := 0
+                case "top-right":
+                    ce.sampleX := 100, ce.sampleY := 0
+                case "center":
+                    ce.sampleX := 50, ce.sampleY := 50
+                case "bottom-left":
+                    ce.sampleX := 0, ce.sampleY := 100
+                case "bottom-right":
+                    ce.sampleX := 100, ce.sampleY := 100
+                default:
+                    ce.sampleX := 0, ce.sampleY := 0
+            }
+        }
+        
+        ; Ensure sampleX/Y exist
+        if !ce.HasOwnProp("sampleX")
+            ce.sampleX := 0
+        if !ce.HasOwnProp("sampleY")
+            ce.sampleY := 0
+
+        ; Create configuration dialog
+        enhGui := Gui("+AlwaysOnTop", "Color Enhancer Settings")
+        enhGui.SetFont("s10")
+
+        ; Enable checkbox
+        enabledCb := enhGui.AddCheckbox("w300 " (ce.enabled ? "Checked" : ""), "Enable Color Enhancer")
+
+        enhGui.AddText("w300", "")
+        enhGui.AddText("w300 Section", "=== Detection Settings ===")
+        
+        enhGui.AddText("w150", "Target Color (hex):")
+        targetEdit := enhGui.AddEdit("x+10 w100", ce.targetColor)
+        enhGui.AddButton("x+5 w60", "Pick").OnEvent("Click", (*) => this.PickColorForEdit(targetEdit))
+
+        enhGui.AddText("xs w150", "Color Tolerance (0-255):")
+        toleranceEdit := enhGui.AddEdit("x+10 w100", String(ce.tolerance))
+        enhGui.AddText("x+10 w80 cGray", "Higher = looser")
+
+        enhGui.AddText("xs w150", "Sample Location:")
+        sampleXEdit := enhGui.AddEdit("x+10 w40", String(Round(ce.sampleX)))
+        enhGui.AddText("x+5", "% X")
+        sampleYEdit := enhGui.AddEdit("x+10 w40", String(Round(ce.sampleY)))
+        enhGui.AddText("x+5", "% Y")
+        enhGui.AddButton("x+10 w60", "Pick...").OnEvent("Click", (*) => PickSampleLocation())
+
+        enhGui.AddText("xs w300", "")
+        enhGui.AddText("w300", "=== Border Appearance ===")
+        
+        enhGui.AddText("w150", "Border Color (hex):")
+        borderColorEdit := enhGui.AddEdit("x+10 w100", ce.borderColor)
+        enhGui.AddButton("x+5 w60", "Pick").OnEvent("Click", (*) => this.PickColorForEdit(borderColorEdit))
+
+        enhGui.AddText("xs w150", "Border Thickness (px):")
+        thicknessEdit := enhGui.AddEdit("x+10 w100", String(ce.borderThickness))
+
+        enhGui.AddText("xs w300", "")
+        enhGui.AddText("w300", "=== Flash Settings ===")
+        
+        flashCb := enhGui.AddCheckbox("xs w300 " (ce.flash ? "Checked" : ""), "Enable Flashing Border")
+        
+        enhGui.AddText("xs w150", "Flash Speed (ms):")
+        flashSpeedEdit := enhGui.AddEdit("x+10 w100", String(ce.flashSpeed))
+        enhGui.AddText("x+10 w80 cGray", "Lower = faster")
+
+        ; Preview colors
+        enhGui.AddText("xs w300 h1 0x10")  ; Separator
+        enhGui.AddText("xs w300", "Color Preview:")
+        targetPreview := enhGui.AddText("xs w80 h30 Border", "Target")
+        targetPreview.Opt("Background" ce.targetColor)
+        borderPreview := enhGui.AddText("x+20 w80 h30 Border", "Border")
+        borderPreview.Opt("Background" ce.borderColor)
+
+        ; Update preview on change
+        targetEdit.OnEvent("Change", (*) => targetPreview.Opt("Background" targetEdit.Value))
+        borderColorEdit.OnEvent("Change", (*) => borderPreview.Opt("Background" borderColorEdit.Value))
+
+        enhGui.AddText("xs w300", "")
+        enhGui.AddButton("xs w80", "Apply").OnEvent("Click", (*) => ApplyEnhancer())
+        enhGui.AddButton("x+10 w80", "Test").OnEvent("Click", (*) => TestBorder())
+        enhGui.AddButton("x+10 w80", "Cancel").OnEvent("Click", (*) => enhGui.Destroy())
+
+        enhGui.Show()
+        
+        PickSampleLocation() {
+            ; Show preview of the region and let user click to pick location
+            if !r.hSource {
+                MsgBox("No source window selected for this region.", "Pick Sample Location", "Icon!")
+                return
+            }
+            
+            ; Get source region dimensions (what we're actually displaying)
+            srcRegionW := r.srcR - r.srcL
+            srcRegionH := r.srcB - r.srcT
+            
+            if srcRegionW <= 0 || srcRegionH <= 0 {
+                MsgBox("Invalid source region dimensions.", "Error", "Icon!")
+                return
+            }
+            
+            ; Initial zoom level
+            pickZoom := 1.0
+            pickPanX := 0
+            pickPanY := 0
+            
+            ; Calculate initial preview size (fit in 600x500, maintain aspect ratio)
+            maxW := 600, maxH := 500
+            fitScale := Min(maxW / srcRegionW, maxH / srcRegionH, 1.0)
+            initialW := Round(srcRegionW * fitScale)
+            initialH := Round(srcRegionH * fitScale)
+            
+            ; Create resizable preview window with maximize
+            pickGui := Gui("+AlwaysOnTop +Resize +MaximizeBox", "Click to Select Sample Point - Scroll to Zoom")
+            pickGui.BackColor := "222222"
+            
+            ; Instructions
+            pickGui.SetFont("s9 cWhite")
+            pickGui.AddText("x10 y5 w" initialW " vInstrText", "Click to select | Scroll to zoom | Right-drag to pan | Current: " Round(ce.sampleX) "%, " Round(ce.sampleY) "%")
+            
+            ; Preview area (clickable)
+            pickGui.AddText("x10 y25 w" initialW " h" initialH " Background000000 +0x100 vPickArea", "")
+            
+            ; Zoom indicator
+            pickGui.AddText("x10 y+5 w100 cGray vZoomText", "Zoom: 100%")
+            
+            ; Register DWM thumbnail
+            thumbId := 0
+            DllCall("dwmapi\DwmRegisterThumbnail", "Ptr", pickGui.Hwnd, "Ptr", r.hSource, "Ptr*", &thumbId)
+            
+            if !thumbId {
+                MsgBox("Could not create preview thumbnail.", "Error", "Icon!")
+                pickGui.Destroy()
+                return
+            }
+            
+            pickGui.Show("w" (initialW + 20) " h" (initialH + 55))
+            
+            ; Update thumbnail display
+            UpdatePickPreview()
+            
+            ; Get the pick area control for events
+            pickArea := pickGui["PickArea"]
+            pickArea.OnEvent("Click", OnPickClick)
+            
+            ; Handle resize
+            pickGui.OnEvent("Size", OnPickResize)
+            pickGui.OnEvent("Close", OnPickClose)
+            
+            ; Variables for pan
+            isPanning := false
+            panStartX := 0
+            panStartY := 0
+            panStartPanX := 0
+            panStartPanY := 0
+            
+            ; Register hotkeys for mouse wheel
+            HotIfWinActive("ahk_id " pickGui.Hwnd)
+            Hotkey("WheelUp", (*) => ZoomIn(), "On")
+            Hotkey("WheelDown", (*) => ZoomOut(), "On")
+            HotIfWinActive()
+            
+            ZoomIn() {
+                pickZoom := Min(10.0, pickZoom * 1.25)
+                UpdatePickPreview()
+            }
+            
+            ZoomOut() {
+                pickZoom := Max(0.5, pickZoom / 1.25)
+                UpdatePickPreview()
+            }
+            
+            ; Start timer for right-drag detection
+            SetTimer(CheckPickMouse, 16)
+            
+            UpdatePickPreview() {
+                pickArea := pickGui["PickArea"]
+                pickArea.GetPos(&areaX, &areaY, &areaW, &areaH)
+                
+                ; Calculate visible source region based on zoom and pan
+                visibleW := Round(srcRegionW / pickZoom)
+                visibleH := Round(srcRegionH / pickZoom)
+                
+                ; Clamp pan
+                maxPanX := Max(0, srcRegionW - visibleW)
+                maxPanY := Max(0, srcRegionH - visibleH)
+                pickPanX := Max(0, Min(pickPanX, maxPanX))
+                pickPanY := Max(0, Min(pickPanY, maxPanY))
+                
+                ; Source rectangle (offset by srcL/srcT to get actual source window coords)
+                srcL := r.srcL + Round(pickPanX)
+                srcT := r.srcT + Round(pickPanY)
+                srcR := r.srcL + Min(srcRegionW, Round(pickPanX) + visibleW)
+                srcB := r.srcT + Min(srcRegionH, Round(pickPanY) + visibleH)
+                
+                ; Update thumbnail properties (destination uses CLIENT coordinates)
+                props := Buffer(48, 0)
+                NumPut("UInt", 0x1F, props, 0)  ; flags
+                NumPut("Int", areaX, props, 4)   ; dest left (client coords)
+                NumPut("Int", areaY, props, 8)   ; dest top (client coords)
+                NumPut("Int", areaX + areaW, props, 12)  ; dest right
+                NumPut("Int", areaY + areaH, props, 16)  ; dest bottom
+                NumPut("Int", srcL, props, 20)   ; src left
+                NumPut("Int", srcT, props, 24)   ; src top
+                NumPut("Int", srcR, props, 28)   ; src right
+                NumPut("Int", srcB, props, 32)   ; src bottom
+                NumPut("UChar", 255, props, 36)  ; opacity
+                NumPut("Int", 1, props, 40)      ; visible
+                NumPut("Int", 1, props, 44)      ; client area only
+                
+                DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", thumbId, "Ptr", props)
+                
+                ; Update zoom text
+                try pickGui["ZoomText"].Value := "Zoom: " Round(pickZoom * 100) "%"
+            }
+            
+            OnPickResize(guiObj, minMax, width, height) {
+                if minMax = -1  ; Minimized
+                    return
+                
+                pickArea := pickGui["PickArea"]
+                instrText := pickGui["InstrText"]
+                zoomText := pickGui["ZoomText"]
+                
+                ; Resize controls
+                newW := width - 20
+                newH := height - 55
+                if newW > 0 && newH > 0 {
+                    instrText.Move(10, 5, newW)
+                    pickArea.Move(10, 25, newW, newH)
+                    zoomText.Move(10, 25 + newH + 5)
+                    UpdatePickPreview()
+                }
+            }
+            
+            CheckPickMouse() {
+                if !WinExist("ahk_id " pickGui.Hwnd) {
+                    SetTimer(CheckPickMouse, 0)
+                    return
+                }
+                
+                ; Handle right-drag for panning
+                rDown := GetKeyState("RButton", "P")
+                if rDown {
+                    MouseGetPos(&mx, &my, &winUnder)
+                    if (winUnder = pickGui.Hwnd) {
+                        if !isPanning {
+                            isPanning := true
+                            panStartX := mx
+                            panStartY := my
+                            panStartPanX := pickPanX
+                            panStartPanY := pickPanY
+                        } else {
+                            ; Calculate pan delta
+                            pickArea := pickGui["PickArea"]
+                            pickArea.GetPos(,, &areaW, &areaH)
+                            
+                            dx := mx - panStartX
+                            dy := my - panStartY
+                            
+                            ; Convert screen delta to source delta
+                            srcDX := dx * (srcRegionW / pickZoom) / areaW
+                            srcDY := dy * (srcRegionH / pickZoom) / areaH
+                            
+                            pickPanX := panStartPanX - srcDX
+                            pickPanY := panStartPanY - srcDY
+                            UpdatePickPreview()
+                        }
+                    }
+                } else {
+                    isPanning := false
+                }
+            }
+            
+            OnPickClick(ctrl, info, *) {
+                CoordMode("Mouse", "Client")
+                MouseGetPos(&mx, &my)
+                
+                pickArea := pickGui["PickArea"]
+                pickArea.GetPos(&areaX, &areaY, &areaW, &areaH)
+                
+                ; Check if click is within preview area
+                if (mx >= areaX && mx < areaX + areaW && my >= areaY && my < areaY + areaH) {
+                    ; Calculate position within the visible source region
+                    relX := (mx - areaX) / areaW  ; 0-1 within display
+                    relY := (my - areaY) / areaH
+                    
+                    ; Convert to source region position (accounting for zoom and pan)
+                    visibleW := srcRegionW / pickZoom
+                    visibleH := srcRegionH / pickZoom
+                    
+                    srcX := pickPanX + relX * visibleW
+                    srcY := pickPanY + relY * visibleH
+                    
+                    ; Convert to percentage of full region
+                    pctX := Round((srcX / srcRegionW) * 100)
+                    pctY := Round((srcY / srcRegionH) * 100)
+                    
+                    ; Clamp to 0-100
+                    pctX := Max(0, Min(100, pctX))
+                    pctY := Max(0, Min(100, pctY))
+                    
+                    ; Update edit fields
+                    sampleXEdit.Value := String(pctX)
+                    sampleYEdit.Value := String(pctY)
+                    
+                    ; Cleanup and close
+                    SetTimer(CheckPickMouse, 0)
+                    HotIfWinActive("ahk_id " pickGui.Hwnd)
+                    try Hotkey("WheelUp", "Off")
+                    try Hotkey("WheelDown", "Off")
+                    HotIfWinActive()
+                    if thumbId
+                        DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", thumbId)
+                    pickGui.Destroy()
+                }
+            }
+            
+            OnPickClose(*) {
+                SetTimer(CheckPickMouse, 0)
+                ; Turn off hotkeys
+                HotIfWinActive("ahk_id " pickGui.Hwnd)
+                try Hotkey("WheelUp", "Off")
+                try Hotkey("WheelDown", "Off")
+                HotIfWinActive()
+                if thumbId
+                    DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", thumbId)
+            }
+        }
+
+        TestBorder() {
+            ; Temporarily apply settings and show border
+            ce.borderColor := borderColorEdit.Value
+            ce.borderThickness := Max(1, Min(50, Integer(thicknessEdit.Value)))
+            r.colorEnhancer := ce
+            this.ShowColorEnhancerBorder(this.selectedRegion)
+            ; Hide after 2 seconds
+            SetTimer(() => this.HideColorEnhancerBorder(this.selectedRegion), -2000)
+        }
+
+        ApplyEnhancer() {
+            ce.enabled := enabledCb.Value
+            ce.targetColor := targetEdit.Value
+            ce.tolerance := Max(0, Min(255, Integer(toleranceEdit.Value)))
+            ce.sampleX := Max(0, Min(100, Integer(sampleXEdit.Value)))
+            ce.sampleY := Max(0, Min(100, Integer(sampleYEdit.Value)))
+            ce.borderColor := borderColorEdit.Value
+            ce.borderThickness := Max(1, Min(50, Integer(thicknessEdit.Value)))
+            ce.flash := flashCb.Value
+            ce.flashSpeed := Max(100, Min(2000, Integer(flashSpeedEdit.Value)))
+            ; Clear cached color values so they get reparsed
+            ce.DeleteProp("_targetR")
+            ce.DeleteProp("_targetG")
+            ce.DeleteProp("_targetB")
+            r.colorEnhancer := ce
+            enhGui.Destroy()
+            
+            ; Clear existing border overlays for this region
+            this.ClearColorEnhancerBorder(this.selectedRegion)
+            
+            this.ShowMessage(ce.enabled ? "Color Enhancer enabled" : "Color Enhancer disabled", 2000)
+        }
+    }
+
+    PickColorForEdit(editCtrl) {
+        ; Use Windows color picker dialog
+        static CC_RGBINIT := 0x1, CC_FULLOPEN := 0x2
+        static customColors := Buffer(64, 0)
+        
+        ; Parse current color from edit
+        currentHex := editCtrl.Value
+        if StrLen(currentHex) >= 6 {
+            r := Integer("0x" SubStr(currentHex, 1, 2))
+            g := Integer("0x" SubStr(currentHex, 3, 2))
+            b := Integer("0x" SubStr(currentHex, 5, 2))
+            rgbInit := (b << 16) | (g << 8) | r  ; COLORREF is BGR
+        } else {
+            rgbInit := 0
+        }
+        
+        ; CHOOSECOLOR structure
+        cc := Buffer(A_PtrSize = 8 ? 72 : 36, 0)
+        NumPut("UInt", cc.Size, cc, 0)
+        NumPut("Ptr", 0, cc, A_PtrSize)  ; hwndOwner
+        NumPut("UInt", rgbInit, cc, A_PtrSize * 3)  ; rgbResult
+        NumPut("Ptr", customColors.Ptr, cc, A_PtrSize * 4)  ; lpCustColors
+        NumPut("UInt", CC_RGBINIT | CC_FULLOPEN, cc, A_PtrSize * 5)  ; Flags
+        
+        if DllCall("comdlg32\ChooseColorW", "Ptr", cc) {
+            rgb := NumGet(cc, A_PtrSize * 3, "UInt")
+            r := rgb & 0xFF
+            g := (rgb >> 8) & 0xFF
+            b := (rgb >> 16) & 0xFF
+            editCtrl.Value := Format("{:02X}{:02X}{:02X}", r, g, b)
+        }
+    }
+
+    ToggleColorEnhancer(enable) {
+        if this.selectedRegion > this.regions.Length
+            return
+
+        r := this.regions[this.selectedRegion]
+        
+        if !r.HasOwnProp("colorEnhancer")
+            r.colorEnhancer := {enabled: false, targetColor: "FF0000", tolerance: 30, sampleX: 0, sampleY: 0, borderColor: "00FF00", borderThickness: 4, flash: false, flashSpeed: 500}
+        
+        r.colorEnhancer.enabled := enable
+        
+        if !enable
+            this.ClearColorEnhancerBorder(this.selectedRegion)
+        
+        this.ShowMessage(enable ? "Color Enhancer enabled" : "Color Enhancer disabled", 2000)
+    }
+
+    ClearColorEnhancerBorder(index) {
+        if index > this.colorEnhancerOverlays.Length
+            return
+        
+        borders := this.colorEnhancerOverlays[index]
+        if borders is Array {
+            for border in borders {
+                if border
+                    try border.Destroy()
+            }
+        }
+        this.colorEnhancerOverlays[index] := []
+    }
+
+    UpdateColorEnhancers() {
+        static lastFullCheck := 0
+        
+        if !this.initialized
+            return
+        
+        currentTick := A_TickCount
+        
+        ; Use cached active state
+        shouldShow := this.IsWindowActive() || this.isFullscreen
+        
+        ; If window not active/fullscreen, hide all visible borders and return
+        if !shouldShow {
+            for i, visible in this.colorEnhancerVisible {
+                if visible {
+                    this.HideColorEnhancerBorder(i)
+                    this.colorEnhancerVisible[i] := false
+                }
+            }
+            return
+        }
+        
+        ; Ensure tracking arrays are sized correctly (only when needed)
+        regCount := this.regions.Length
+        if this.colorEnhancerVisible.Length < regCount {
+            while this.colorEnhancerVisible.Length < regCount
+                this.colorEnhancerVisible.Push(false)
+            while this.colorEnhancerDetected.Length < regCount
+                this.colorEnhancerDetected.Push(false)
+            while this.colorEnhancerOverlays.Length < regCount
+                this.colorEnhancerOverlays.Push([])
+        }
+        
+        ; Only do expensive color detection every 200ms
+        doDetection := (currentTick - lastFullCheck) >= 200
+        if doDetection
+            lastFullCheck := currentTick
+        
+        for i, r in this.regions {
+            ; Skip if no color enhancer or not enabled
+            if !r.HasOwnProp("colorEnhancer") || !r.colorEnhancer.enabled {
+                if this.colorEnhancerVisible[i] {
+                    this.HideColorEnhancerBorder(i)
+                    this.colorEnhancerVisible[i] := false
+                }
+                continue
+            }
+            
+            ; Check if source exists (cheap check)
+            if !r.hSource {
+                if this.colorEnhancerVisible[i] {
+                    this.HideColorEnhancerBorder(i)
+                    this.colorEnhancerVisible[i] := false
+                }
+                continue
+            }
+            
+            ; Only run detection on interval, otherwise use cached result
+            if doDetection
+                this.colorEnhancerDetected[i] := this.DetectColorInRegion(i)
+            
+            colorDetected := this.colorEnhancerDetected[i]
+            ce := r.colorEnhancer
+            
+            if colorDetected {
+                if ce.flash {
+                    ; Flash timing
+                    cycleTime := ce.flashSpeed * 2
+                    wantVisible := (Mod(currentTick, cycleTime) < ce.flashSpeed)
+                    
+                    if wantVisible != this.colorEnhancerVisible[i] {
+                        if wantVisible
+                            this.ShowColorEnhancerBorder(i)
+                        else
+                            this.HideColorEnhancerBorder(i)
+                        this.colorEnhancerVisible[i] := wantVisible
+                    }
+                } else {
+                    if !this.colorEnhancerVisible[i] {
+                        this.ShowColorEnhancerBorder(i)
+                        this.colorEnhancerVisible[i] := true
+                    }
+                }
+            } else {
+                if this.colorEnhancerVisible[i] {
+                    this.HideColorEnhancerBorder(i)
+                    this.colorEnhancerVisible[i] := false
+                }
+            }
+        }
+    }
+
+    DetectColorInRegion(index) {
+        static pt := Buffer(8, 0)  ; Reuse buffer
+        
+        r := this.regions[index]
+        ce := r.colorEnhancer
+        
+        ; Cache parsed color in colorEnhancer object
+        if !ce.HasOwnProp("_targetR") {
+            try {
+                ce._targetR := Integer("0x" SubStr(ce.targetColor, 1, 2))
+                ce._targetG := Integer("0x" SubStr(ce.targetColor, 3, 2))
+                ce._targetB := Integer("0x" SubStr(ce.targetColor, 5, 2))
+            } catch {
+                return false
+            }
+        }
+        
+        ; Get screen position using cached values
+        scale := this.cachedScale
+        clientSize := this.GetCachedClientSize()
+        maxBottom := (this.isFullscreen || this.isEditFullscreen) ? clientSize.h : clientSize.h - 40
+        
+        scaledL := Round(r.destL * scale)
+        scaledT := Round(r.destT * scale)
+        scaledR := Round(r.destR * scale)
+        scaledB := Min(Round(r.destB * scale), maxBottom)
+        screenW := scaledR - scaledL
+        screenH := scaledB - scaledT
+        
+        if screenW <= 0 || screenH <= 0
+            return false
+        
+        ; Convert to screen coordinates
+        NumPut("Int", scaledL, "Int", scaledT, pt)
+        DllCall("ClientToScreen", "Ptr", this.gui.Hwnd, "Ptr", pt)
+        screenX := NumGet(pt, 0, "Int")
+        screenY := NumGet(pt, 4, "Int")
+        
+        ; Determine sample position using percentage coordinates
+        ; Support both old samplePos and new sampleX/sampleY
+        if ce.HasOwnProp("sampleX") && ce.HasOwnProp("sampleY") {
+            ; Use percentage-based position
+            px := screenX + Round((ce.sampleX / 100) * (screenW - 1))
+            py := screenY + Round((ce.sampleY / 100) * (screenH - 1))
+        } else if ce.HasOwnProp("samplePos") {
+            ; Legacy support for old samplePos
+            samplePos := ce.samplePos
+            if samplePos = "top-left" {
+                px := screenX
+                py := screenY
+            } else if samplePos = "top-right" {
+                px := screenX + screenW - 1
+                py := screenY
+            } else if samplePos = "center" {
+                px := screenX + (screenW >> 1)
+                py := screenY + (screenH >> 1)
+            } else if samplePos = "bottom-left" {
+                px := screenX
+                py := screenY + screenH - 1
+            } else if samplePos = "bottom-right" {
+                px := screenX + screenW - 1
+                py := screenY + screenH - 1
+            } else {
+                px := screenX
+                py := screenY
+            }
+        } else {
+            ; Default to top-left
+            px := screenX
+            py := screenY
+        }
+        
+        ; Get pixel directly from screen
+        hdc := DllCall("GetDC", "Ptr", 0, "Ptr")
+        if !hdc
+            return false
+        
+        pixel := DllCall("GetPixel", "Ptr", hdc, "Int", px, "Int", py, "UInt")
+        DllCall("ReleaseDC", "Ptr", 0, "Ptr", hdc)
+        
+        if pixel = 0xFFFFFFFF
+            return false
+        
+        ; Fast color comparison
+        tolerance := ce.tolerance
+        pixelR := pixel & 0xFF
+        pixelG := (pixel >> 8) & 0xFF
+        pixelB := (pixel >> 16) & 0xFF
+        
+        return (Abs(pixelR - ce._targetR) <= tolerance && Abs(pixelG - ce._targetG) <= tolerance && Abs(pixelB - ce._targetB) <= tolerance)
+    }
+
+    ShowColorEnhancerBorder(index) {
+        static pt := Buffer(8, 0)  ; Reuse buffer
+        
+        if index > this.regions.Length
+            return
+            
+        r := this.regions[index]
+        
+        if !r.HasOwnProp("colorEnhancer")
+            return
+            
+        ce := r.colorEnhancer
+        
+        ; Ensure colorEnhancerOverlays array is large enough
+        while this.colorEnhancerOverlays.Length < index
+            this.colorEnhancerOverlays.Push([])
+        
+        ; Get screen position using cached values
+        scale := this.cachedScale
+        clientSize := this.GetCachedClientSize()
+        maxBottom := (this.isFullscreen || this.isEditFullscreen) ? clientSize.h : clientSize.h - 40
+        
+        scaledL := Round(r.destL * scale)
+        scaledT := Round(r.destT * scale)
+        scaledR := Round(r.destR * scale)
+        scaledB := Min(Round(r.destB * scale), maxBottom)
+        
+        ; Convert to screen coordinates
+        NumPut("Int", scaledL, "Int", scaledT, pt)
+        DllCall("ClientToScreen", "Ptr", this.gui.Hwnd, "Ptr", pt)
+        screenX := NumGet(pt, 0, "Int")
+        screenY := NumGet(pt, 4, "Int")
+        screenW := scaledR - scaledL
+        screenH := scaledB - scaledT
+        
+        t := ce.borderThickness
+        
+        ; Get or create border overlays (top, right, bottom, left)
+        borders := this.colorEnhancerOverlays[index]
+        if !(borders is Array) || borders.Length < 4 {
+            borders := []
+            Loop 4 {
+                border := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
+                border.BackColor := ce.borderColor
+                borders.Push(border)
+            }
+            this.colorEnhancerOverlays[index] := borders
+        }
+        
+        ; Position borders: top, right, bottom, left
+        try {
+            borders[1].BackColor := ce.borderColor
+            borders[1].Show("x" screenX " y" screenY " w" screenW " h" t " NoActivate")
+            borders[2].BackColor := ce.borderColor
+            borders[2].Show("x" (screenX + screenW - t) " y" screenY " w" t " h" screenH " NoActivate")
+            borders[3].BackColor := ce.borderColor
+            borders[3].Show("x" screenX " y" (screenY + screenH - t) " w" screenW " h" t " NoActivate")
+            borders[4].BackColor := ce.borderColor
+            borders[4].Show("x" screenX " y" screenY " w" t " h" screenH " NoActivate")
+        }
+        
+        ; Force borders to topmost (only if in fullscreen mode)
+        if this.isFullscreen {
+            for border in borders
+                DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+        }
+    }
+
+    HideColorEnhancerBorder(index) {
+        if index > this.colorEnhancerOverlays.Length
+            return
+        
+        borders := this.colorEnhancerOverlays[index]
+        if borders is Array {
+            for border in borders {
+                if border
+                    try border.Hide()
+            }
+        }
+    }
+
     ReRegisterAllThumbnails() {
         ; Unregister all existing thumbnails
         for thumb in this.thumbnails {
@@ -2444,6 +3294,17 @@ INDEPENDENT REGIONS:
                 try overlay.Destroy()
         }
         this.filterOverlays := []
+
+        ; Clear color enhancer overlays
+        for borders in this.colorEnhancerOverlays {
+            if borders is Array {
+                for border in borders {
+                    if border
+                        try border.Destroy()
+                }
+            }
+        }
+        this.colorEnhancerOverlays := []
 
         ; Re-register using each region's source
         for i, region in this.regions {
@@ -3622,17 +4483,49 @@ INDEPENDENT REGIONS:
     }
 
     GetScaleFactor() {
-        ; Returns scale factor: windowSize / canvasSize
-        ; In fullscreen modes, scale is 1.0 (no scaling)
-        if this.isFullscreen || this.isEditFullscreen
-            return 1.0
-
-        this.gui.GetClientPos(,, &cw, &ch)
-        ; Use height-based scaling to maintain aspect ratio, leave space for controls
-        availableH := ch - 40  ; Space for dropdown
-        scaleX := cw / this.canvasW
-        scaleY := availableH / this.canvasH
-        return Min(scaleX, scaleY)
+        ; Returns cached scale factor, updates every 50ms max
+        now := A_TickCount
+        if (now - this.lastCacheUpdate) > 50 {
+            this.UpdateCache()
+        }
+        return this.cachedScale
+    }
+    
+    UpdateCache() {
+        ; Update all cached values at once
+        this.lastCacheUpdate := A_TickCount
+        this.cachedIsActive := WinActive("ahk_id " this.gui.Hwnd)
+        
+        if this.isFullscreen || this.isEditFullscreen {
+            this.cachedScale := 1.0
+            return
+        }
+        
+        try {
+            this.gui.GetClientPos(,, &cw, &ch)
+            this.cachedClientW := cw
+            this.cachedClientH := ch
+            availableH := ch - 40
+            scaleX := cw / this.canvasW
+            scaleY := availableH / this.canvasH
+            this.cachedScale := Min(scaleX, scaleY)
+        }
+    }
+    
+    GetCachedClientSize() {
+        now := A_TickCount
+        if (now - this.lastCacheUpdate) > 50 {
+            this.UpdateCache()
+        }
+        return {w: this.cachedClientW, h: this.cachedClientH}
+    }
+    
+    IsWindowActive() {
+        now := A_TickCount
+        if (now - this.lastCacheUpdate) > 50 {
+            this.UpdateCache()
+        }
+        return this.cachedIsActive
     }
 
     WindowToCanvas(x, y) {
@@ -3718,12 +4611,14 @@ INDEPENDENT REGIONS:
         while this.filterOverlays.Length < index
             this.filterOverlays.Push(0)
 
-        ; If no filter color, hide/destroy the overlay
-        if (r.filterColor = "") {
-            if (this.filterOverlays[index] != 0) {
-                try this.filterOverlays[index].Destroy()
-                this.filterOverlays[index] := 0
-            }
+        ; Check if we should show filters: window active OR fullscreen locked
+        isActive := WinActive("ahk_id " this.gui.Hwnd)
+        shouldShow := (isActive || this.isFullscreen) && r.filterColor != ""
+
+        ; If should not show, hide the overlay
+        if !shouldShow {
+            if (this.filterOverlays[index] != 0)
+                try this.filterOverlays[index].Hide()
             return
         }
 
@@ -3753,24 +4648,59 @@ INDEPENDENT REGIONS:
         ; Force overlay to top during fullscreen modes
         if (this.isFullscreen || this.isEditFullscreen) {
             overlay := this.filterOverlays[index]
-            ; HWND_TOPMOST = -1, SWP_NOACTIVATE = 0x10, SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1
             DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
         }
     }
 
     ForceRedraw() {
+        static lastFilterHide := 0
+        
         if !this.initialized
             return
 
+        ; Check if we should show filters: window active OR fullscreen locked
+        isActive := WinActive("ahk_id " this.gui.Hwnd)
+        shouldShowFilters := isActive || this.isFullscreen
+
+        ; Hide filters if window not active and not fullscreen locked (throttled)
+        if !shouldShowFilters {
+            now := A_TickCount
+            if (now - lastFilterHide) > 200 {  ; Only check every 200ms
+                for overlay in this.filterOverlays {
+                    if overlay
+                        try overlay.Hide()
+                }
+                lastFilterHide := now
+            }
+            ; Update Not Live overlays less frequently when inactive
+            static lastNotLiveUpdate := 0
+            if (A_TickCount - lastNotLiveUpdate) > 500 {
+                this.UpdateNotLiveOverlays()
+                lastNotLiveUpdate := A_TickCount
+            }
+            return
+        }
+
         ; Keep window on top during fullscreen modes
         if (this.isEditFullscreen || this.isFullscreen) {
-            ; HWND_TOPMOST = -1, SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOACTIVATE = 0x10
             DllCall("SetWindowPos", "Ptr", this.gui.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
 
-            ; Keep filter overlays on top of main window
-            for overlay in this.filterOverlays {
-                if overlay
-                    DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+            ; Keep overlays on top (only in fullscreen locked)
+            if this.isFullscreen {
+                for overlay in this.filterOverlays {
+                    if overlay
+                        DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+                }
+                
+                ; Keep visible color enhancer borders on top (use cached visibility)
+                for i, borders in this.colorEnhancerOverlays {
+                    if borders is Array && i <= this.colorEnhancerVisible.Length && this.colorEnhancerVisible[i] {
+                        for border in borders {
+                            if border
+                                DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+                        }
+                    }
+                }
             }
         }
 
@@ -3779,48 +4709,61 @@ INDEPENDENT REGIONS:
     }
 
     UpdateNotLiveOverlays() {
+        static notLiveState := []  ; Track previous state to avoid unnecessary updates
+        static lastUpdate := 0
+        
+        ; Throttle to every 250ms
+        now := A_TickCount
+        if (now - lastUpdate) < 250
+            return
+        lastUpdate := now
+        
         ; Ensure we have enough overlay controls
         while this.notLiveOverlays.Length < this.regions.Length {
-            ; Create overlay text control (initially hidden) with dark background
             this.gui.SetFont("s12 cFF4444 Bold", "Segoe UI")
             overlay := this.gui.AddText("w100 h24 Center Hidden Background222222 +0x200", "NOT LIVE")
             this.notLiveOverlays.Push(overlay)
+            notLiveState.Push(false)
             this.gui.SetFont()
         }
+        
+        ; Ensure state array matches
+        while notLiveState.Length < this.regions.Length
+            notLiveState.Push(false)
 
-        ; Get scaling info
-        scale := this.GetScaleFactor()
+        ; Get scaling info (cached)
+        scale := this.cachedScale
 
-        ; Update each overlay
+        ; Update each overlay only when state changes
         for i, r in this.regions {
             if i > this.notLiveOverlays.Length
                 continue
 
             overlay := this.notLiveOverlays[i]
+            shouldShow := r.hSource && !this.IsSourceLive(r.hSource)
+            
+            ; Only update if state changed
+            if shouldShow != notLiveState[i] {
+                notLiveState[i] := shouldShow
+                
+                if shouldShow {
+                    ; Calculate position (center of region)
+                    scaledL := Round(r.destL * scale)
+                    scaledT := Round(r.destT * scale)
+                    scaledR := Round(r.destR * scale)
+                    scaledB := Round(r.destB * scale)
 
-            ; Check if source exists and is not live
-            if r.hSource && !this.IsSourceLive(r.hSource) {
-                ; Calculate position (center of region)
-                scaledL := Round(r.destL * scale)
-                scaledT := Round(r.destT * scale)
-                scaledR := Round(r.destR * scale)
-                scaledB := Round(r.destB * scale)
+                    regionW := scaledR - scaledL
+                    regionH := scaledB - scaledT
+                    overlayX := scaledL + (regionW - 100) // 2
+                    overlayY := scaledT + (regionH - 24) // 2
 
-                regionW := scaledR - scaledL
-                regionH := scaledB - scaledT
-                overlayW := 100
-                overlayH := 24
-                overlayX := scaledL + (regionW - overlayW) // 2
-                overlayY := scaledT + (regionH - overlayH) // 2
-
-                overlay.Move(overlayX, overlayY, overlayW, overlayH)
-                overlay.Visible := true
-
-                ; Bring overlay to front
-                DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", 0,
-                    "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
-            } else {
-                overlay.Visible := false
+                    overlay.Move(overlayX, overlayY, 100, 24)
+                    overlay.Visible := true
+                    DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", 0, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+                } else {
+                    overlay.Visible := false
+                }
             }
         }
     }
@@ -3876,6 +4819,7 @@ INDEPENDENT REGIONS:
         SetTimer(() => this.ForceRedraw(), 0)
         SetTimer(() => this.CheckWeatherRefresh(), 0)
         SetTimer(() => this.CheckMissingSources(), 0)
+        SetTimer(() => this.UpdateColorEnhancers(), 0)
 
         ; Shutdown GDI+
         this.ShutdownGDIPlus()
@@ -3900,6 +4844,16 @@ INDEPENDENT REGIONS:
         for overlay in this.filterOverlays {
             if overlay
                 try overlay.Destroy()
+        }
+
+        ; Destroy color enhancer overlays
+        for borders in this.colorEnhancerOverlays {
+            if borders is Array {
+                for border in borders {
+                    if border
+                        try border.Destroy()
+                }
+            }
         }
 
         for thumb in this.thumbnails {
