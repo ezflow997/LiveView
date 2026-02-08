@@ -4,6 +4,35 @@
 ; Enable Per-Monitor DPI Awareness for proper scaling
 try DllCall("SetThreadDpiAwarenessContext", "Ptr", -3)
 
+; Global error handler - logs all errors to file silently
+OnError(LogError)
+
+LogError(e, mode) {
+    static logFile := A_ScriptDir "\LiveView_errors.log"
+
+    timestamp := FormatTime(, "yyyy-MM-dd HH:mm:ss")
+
+    errorText := "═══════════════════════════════════════════════════════`n"
+    errorText .= "Timestamp: " timestamp "`n"
+    errorText .= "Error: " e.Message "`n"
+    errorText .= "What: " e.What "`n"
+    errorText .= "File: " e.File "`n"
+    errorText .= "Line: " e.Line "`n"
+
+    if e.HasOwnProp("Extra")
+        errorText .= "Extra: " e.Extra "`n"
+
+    if e.HasOwnProp("Stack")
+        errorText .= "Stack:`n" e.Stack "`n"
+
+    errorText .= "═══════════════════════════════════════════════════════`n`n"
+
+    ; Append to log file silently
+    try FileAppend(errorText, logFile)
+
+    return 0  ; Continue running
+}
+
 class ThumbnailViewer {
     thumbnails := []
     regions := []       ; Each region now has: srcL, srcT, srcR, srcB, destL, destT, destR, destB, hSource, sourceTitle, sourceExe
@@ -2445,6 +2474,22 @@ INDEPENDENT REGIONS:
             this.filterOverlays.RemoveAt(idx)
         }
 
+        ; Clean up color enhancer arrays
+        if idx <= this.colorEnhancerOverlays.Length {
+            borders := this.colorEnhancerOverlays[idx]
+            if borders is Array {
+                for border in borders {
+                    if border
+                        try border.Destroy()
+                }
+            }
+            this.colorEnhancerOverlays.RemoveAt(idx)
+        }
+        if idx <= this.colorEnhancerVisible.Length
+            this.colorEnhancerVisible.RemoveAt(idx)
+        if idx <= this.colorEnhancerDetected.Length
+            this.colorEnhancerDetected.RemoveAt(idx)
+
         if idx <= this.thumbnails.Length
             this.thumbnails.RemoveAt(idx)
         this.regions.RemoveAt(idx)
@@ -2463,6 +2508,20 @@ INDEPENDENT REGIONS:
         ; Move region to end of array (renders on top)
         region := this.regions.RemoveAt(idx)
         this.regions.Push(region)
+
+        ; Reorder color enhancer arrays to match
+        if idx <= this.colorEnhancerOverlays.Length {
+            overlay := this.colorEnhancerOverlays.RemoveAt(idx)
+            this.colorEnhancerOverlays.Push(overlay)
+        }
+        if idx <= this.colorEnhancerVisible.Length {
+            visible := this.colorEnhancerVisible.RemoveAt(idx)
+            this.colorEnhancerVisible.Push(visible)
+        }
+        if idx <= this.colorEnhancerDetected.Length {
+            detected := this.colorEnhancerDetected.RemoveAt(idx)
+            this.colorEnhancerDetected.Push(detected)
+        }
 
         ; Re-register all thumbnails in new order
         this.ReRegisterAllThumbnails()
@@ -2485,6 +2544,20 @@ INDEPENDENT REGIONS:
         ; Move region to beginning of array (renders on bottom)
         region := this.regions.RemoveAt(idx)
         this.regions.InsertAt(1, region)
+
+        ; Reorder color enhancer arrays to match
+        if idx <= this.colorEnhancerOverlays.Length {
+            overlay := this.colorEnhancerOverlays.RemoveAt(idx)
+            this.colorEnhancerOverlays.InsertAt(1, overlay)
+        }
+        if idx <= this.colorEnhancerVisible.Length {
+            visible := this.colorEnhancerVisible.RemoveAt(idx)
+            this.colorEnhancerVisible.InsertAt(1, visible)
+        }
+        if idx <= this.colorEnhancerDetected.Length {
+            detected := this.colorEnhancerDetected.RemoveAt(idx)
+            this.colorEnhancerDetected.InsertAt(1, detected)
+        }
 
         ; Re-register all thumbnails in new order
         this.ReRegisterAllThumbnails()
@@ -3023,7 +3096,7 @@ INDEPENDENT REGIONS:
         currentTick := A_TickCount
         
         ; Use cached active state
-        shouldShow := this.IsWindowActive() || this.isFullscreen
+        shouldShow := this.IsWindowActive() || this.isFullscreen || this.isEditFullscreen
         
         ; If window not active/fullscreen, hide all visible borders and return
         if !shouldShow {
