@@ -271,6 +271,8 @@ class ThumbnailViewer {
         this.contextMenu.Add()
         this.contextMenu.Add("Exit App", (*) => this.Cleanup())
 
+        ; Black background handled by gui.BackColor and GDI+ GdipGraphicsClear
+
         ; Status bar / region selector at bottom
         this.gui.SetFont("s10")
         this.regionDropdown := this.gui.AddDropDownList("w150 Choose1", this.GetRegionList())
@@ -297,8 +299,9 @@ class ThumbnailViewer {
 
         ; Missing source check timing
         this.appStartTime := A_TickCount
-        this.missingSourceCheckInterval := 30000  ; starts at 30 seconds
+        this.missingSourceCheckInterval := 0  ; starts at 0 to ensure first run sets recurring timer
         this.missingSourcesStartTime := 0  ; tracks when sources first went missing
+        this.checkMissingSourcesFn := ObjBindMethod(this, "CheckMissingSources")
 
         ; Load API config if exists
         this.LoadAPIConfig()
@@ -319,17 +322,9 @@ class ThumbnailViewer {
         SetTimer(() => this.UpdateColorEnhancers(), 100)
 
         ; Check for missing source windows periodically (starts immediately)
-        SetTimer(() => this.CheckMissingSources(), -1000)
+        SetTimer(this.checkMissingSourcesFn, -1000)
 
         this.gui.Show("w800 h600 x300")
-
-        ; Enable DWM composition for this window (MARGINS: left, right, top, bottom all = -1)
-        margins := Buffer(16, 0)
-        NumPut("Int", -1, margins, 0)   ; left
-        NumPut("Int", -1, margins, 4)   ; right
-        NumPut("Int", -1, margins, 8)   ; top
-        NumPut("Int", -1, margins, 12)  ; bottom
-        DllCall("dwmapi\DwmExtendFrameIntoClientArea", "Ptr", this.gui.Hwnd, "Ptr", margins)
 
         ; Position dropdown at bottom
         this.PositionControls()
@@ -487,6 +482,9 @@ class ThumbnailViewer {
             DllCall("gdiplus\GdipSetSmoothingMode", "Ptr", graphics, "Int", 4)
             DllCall("gdiplus\GdipSetTextRenderingHint", "Ptr", graphics, "Int", 5) ; ClearType
 
+            ; Always fill background with black first
+            DllCall("gdiplus\GdipGraphicsClear", "Ptr", graphics, "UInt", 0xFF000000)
+
             ; Check if window is active (edit mode)
             activeHwnd := DllCall("GetForegroundWindow", "Ptr")
             isActive := (activeHwnd = this.gui.Hwnd)
@@ -542,7 +540,7 @@ class ThumbnailViewer {
 
                 font := 0
                 if fontFamily {
-                    DllCall("gdiplus\GdipCreateFont", "Ptr", fontFamily, "Float", w.fontSize, "Int", 0, "Int", 2, "Ptr*", &font)
+                    DllCall("gdiplus\GdipCreateFont", "Ptr", fontFamily, "Float", w.fontSize, "Int", 0, "Int", 3, "Ptr*", &font)
                 }
 
                 ; Create text brush
@@ -1200,7 +1198,8 @@ INDEPENDENT REGIONS:
         this.ShowMessage("Configuration loaded")
 
         ; Trigger immediate check for missing sources
-        SetTimer(() => this.CheckMissingSources(), -1)
+        this.missingSourceCheckInterval := 0
+        SetTimer(this.checkMissingSourcesFn, -1)
     }
 
     LoadConfigSilent(configFile) {
@@ -1783,8 +1782,9 @@ INDEPENDENT REGIONS:
         cw := clientSize.w
         ch := clientSize.h
 
-        ; Must be inside client area and not on dropdown at bottom
-        if (localX < 0 || localY < 0 || localX >= cw || localY >= ch - 40) {
+        ; Must be inside client area and not on dropdown at bottom (skip dropdown exclusion in edit fullscreen)
+        bottomMargin := this.isEditFullscreen ? 0 : 40
+        if (localX < 0 || localY < 0 || localX >= cw || localY >= ch - bottomMargin) {
             wasLDown := lDown
             wasRDown := rDown
             return
@@ -1861,13 +1861,20 @@ INDEPENDENT REGIONS:
     }
 
     GetRegionAtPoint(x, y) {
+        ; Convert client coordinates to canvas coordinates for comparison
+        scale := this.GetScaleFactor()
+        if (scale = 0)
+            scale := 1
+        canvasX := Round(x / scale)
+        canvasY := Round(y / scale)
+
         ; Check regions in reverse order (top-most region first)
         ; Regions later in array are rendered on top
         i := this.regions.Length
         while i >= 1 {
             r := this.regions[i]
             ; Check if point is inside this region's destination rectangle
-            if (x >= r.destL && x <= r.destR && y >= r.destT && y <= r.destB)
+            if (canvasX >= r.destL && canvasX <= r.destR && canvasY >= r.destT && canvasY <= r.destB)
                 return i
             i--
         }
@@ -2595,7 +2602,8 @@ INDEPENDENT REGIONS:
         this.ShowMessage("Region " this.selectedRegion ": " status, 2000)
 
         ; Trigger a refresh to update display state
-        SetTimer(() => this.CheckMissingSources(), -1)
+        this.missingSourceCheckInterval := 0
+        SetTimer(this.checkMissingSourcesFn, -1)
     }
 
     SetRegionFilter(color, opacity) {
@@ -3538,13 +3546,13 @@ INDEPENDENT REGIONS:
             }
         }
 
-        ; If no sources are missing, slow down to periodic checks (every 5 minutes)
+        ; If no sources are missing, slow down to periodic checks (every 30 seconds)
         if !hasMissing {
             ; Reset missing start time since all sources are now found
             this.missingSourcesStartTime := 0
-            if this.missingSourceCheckInterval != 300000 {
-                this.missingSourceCheckInterval := 300000
-                SetTimer(() => this.CheckMissingSources(), 300000)
+            if this.missingSourceCheckInterval != 30000 {
+                this.missingSourceCheckInterval := 30000
+                SetTimer(this.checkMissingSourcesFn, 30000)
             }
             return
         }
@@ -3556,28 +3564,28 @@ INDEPENDENT REGIONS:
         ; Calculate time since sources first went missing
         missingElapsed := A_TickCount - this.missingSourcesStartTime
 
-        ; Sources still missing - check every 20 seconds for first 5 minutes
-        if missingElapsed < 300000 {
-            if this.missingSourceCheckInterval != 20000 {
-                this.missingSourceCheckInterval := 20000
-                SetTimer(() => this.CheckMissingSources(), 20000)
+        ; Sources still missing - check every 3 seconds for first 2 minutes
+        if missingElapsed < 120000 {
+            if this.missingSourceCheckInterval != 3000 {
+                this.missingSourceCheckInterval := 3000
+                SetTimer(this.checkMissingSourcesFn, 3000)
             }
             return
         }
 
-        ; After 5 minutes, check every 5 minutes until 40 minutes
-        if missingElapsed < 2400000 {
-            if this.missingSourceCheckInterval != 300000 {
-                this.missingSourceCheckInterval := 300000
-                SetTimer(() => this.CheckMissingSources(), 300000)
+        ; After 2 minutes, check every 30 seconds until 10 minutes
+        if missingElapsed < 600000 {
+            if this.missingSourceCheckInterval != 30000 {
+                this.missingSourceCheckInterval := 30000
+                SetTimer(this.checkMissingSourcesFn, 30000)
             }
             return
         }
 
-        ; After 40 minutes, check every 10 minutes indefinitely
-        if this.missingSourceCheckInterval != 600000 {
-            this.missingSourceCheckInterval := 600000
-            SetTimer(() => this.CheckMissingSources(), 600000)
+        ; After 10 minutes, check every 2 minutes indefinitely
+        if this.missingSourceCheckInterval != 120000 {
+            this.missingSourceCheckInterval := 120000
+            SetTimer(this.checkMissingSourcesFn, 120000)
         }
     }
 
@@ -3981,12 +3989,13 @@ INDEPENDENT REGIONS:
             return
 
         ; Check if window is active
+        static wasActive := true
         activeHwnd := DllCall("GetForegroundWindow", "Ptr")
         isActive := (activeHwnd = this.gui.Hwnd)
 
-        ; When active: use text controls for non-transparent widgets
         ; When active: use text controls for all widgets
         if isActive {
+            wasActive := true
             for i, w in this.widgets {
                 if i > this.widgetControls.Length
                     continue
@@ -4001,51 +4010,64 @@ INDEPENDENT REGIONS:
                     ctrl.Text := this.weatherText
                 }
             }
-            ; Bring clock controls to top (above weather)
-            for i, w in this.widgets {
-                if w.type = "clock" && i <= this.widgetControls.Length {
-                    DllCall("SetWindowPos", "Ptr", this.widgetControls[i].Hwnd, "Ptr", 0,
-                        "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)  ; HWND_TOP, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE
+            ; Bring all widget controls to top
+            ; Weather first, then clock (so clock is on top if overlapping)
+            for pass in [1, 2] {
+                for i, w in this.widgets {
+                    if i > this.widgetControls.Length
+                        continue
+                    if (pass = 1 && w.type = "weather") || (pass = 2 && w.type = "clock") {
+                        DllCall("SetWindowPos", "Ptr", this.widgetControls[i].Hwnd, "Ptr", 0,
+                            "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)  ; HWND_TOP, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE
+                    }
                 }
             }
             return
         }
 
         ; When inactive: hide controls, use GDI+ drawing
+        justBecameInactive := wasActive
+        wasActive := false
+
         for i, w in this.widgets {
             if i > this.widgetControls.Length
                 continue
             this.widgetControls[i].Visible := false
         }
 
-        ; Only invalidate specific widget rectangles that changed
-        for w in this.widgets {
-            needsUpdate := false
+        ; On transition to inactive: full repaint so GDI+ draws background + widgets
+        if justBecameInactive {
+            DllCall("InvalidateRect", "Ptr", this.gui.Hwnd, "Ptr", 0, "Int", false)
+        } else {
+            ; Steady-state inactive: only invalidate widget rects that changed
+            for w in this.widgets {
+                needsUpdate := false
 
-            if w.type = "clock" {
-                if InStr(w.format, "s") {
-                    needsUpdate := true
-                } else {
-                    currentMinute := FormatTime(, "mm")
-                    if (currentMinute != this.lastMinute) {
-                        this.lastMinute := currentMinute
+                if w.type = "clock" {
+                    if InStr(w.format, "s") {
+                        needsUpdate := true
+                    } else {
+                        currentMinute := FormatTime(, "mm")
+                        if (currentMinute != this.lastMinute) {
+                            this.lastMinute := currentMinute
+                            needsUpdate := true
+                        }
+                    }
+                } else if w.type = "weather" {
+                    if (this.weatherText != this.lastWeatherText) {
+                        this.lastWeatherText := this.weatherText
                         needsUpdate := true
                     }
                 }
-            } else if w.type = "weather" {
-                if (this.weatherText != this.lastWeatherText) {
-                    this.lastWeatherText := this.weatherText
-                    needsUpdate := true
-                }
-            }
 
-            if needsUpdate {
-                rect := Buffer(16, 0)
-                NumPut("Int", w.x, rect, 0)
-                NumPut("Int", w.y, rect, 4)
-                NumPut("Int", w.x + w.width, rect, 8)
-                NumPut("Int", w.y + w.height, rect, 12)
-                DllCall("InvalidateRect", "Ptr", this.gui.Hwnd, "Ptr", rect, "Int", false)
+                if needsUpdate {
+                    rect := Buffer(16, 0)
+                    NumPut("Int", w.x, rect, 0)
+                    NumPut("Int", w.y, rect, 4)
+                    NumPut("Int", w.x + w.width, rect, 8)
+                    NumPut("Int", w.y + w.height, rect, 12)
+                    DllCall("InvalidateRect", "Ptr", this.gui.Hwnd, "Ptr", rect, "Int", false)
+                }
             }
         }
 
@@ -4571,6 +4593,11 @@ INDEPENDENT REGIONS:
         
         if this.isFullscreen || this.isEditFullscreen {
             this.cachedScale := 1.0
+            try {
+                this.gui.GetClientPos(,, &cw, &ch)
+                this.cachedClientW := cw
+                this.cachedClientH := ch
+            }
             return
         }
         
@@ -4578,10 +4605,7 @@ INDEPENDENT REGIONS:
             this.gui.GetClientPos(,, &cw, &ch)
             this.cachedClientW := cw
             this.cachedClientH := ch
-            availableH := ch - 40
-            scaleX := cw / this.canvasW
-            scaleY := availableH / this.canvasH
-            this.cachedScale := Min(scaleX, scaleY)
+            this.cachedScale := 1.0  ; No scaling - use canvas coordinates directly
         }
     }
     
@@ -4777,6 +4801,17 @@ INDEPENDENT REGIONS:
             }
         }
 
+        ; Keep widget controls on top when window is active
+        if WinActive("ahk_id " this.gui.Hwnd) {
+            for i, w in this.widgets {
+                if i > this.widgetControls.Length
+                    continue
+                if this.widgetControls[i].Visible
+                    DllCall("SetWindowPos", "Ptr", this.widgetControls[i].Hwnd, "Ptr", 0,
+                        "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)  ; HWND_TOP
+            }
+        }
+
         ; Update "Not Live" overlay indicators
         this.UpdateNotLiveOverlays()
     }
@@ -4891,7 +4926,7 @@ INDEPENDENT REGIONS:
         SetTimer(() => this.AnimateBackground(), 0)
         SetTimer(() => this.ForceRedraw(), 0)
         SetTimer(() => this.CheckWeatherRefresh(), 0)
-        SetTimer(() => this.CheckMissingSources(), 0)
+        SetTimer(this.checkMissingSourcesFn, 0)
         SetTimer(() => this.UpdateColorEnhancers(), 0)
 
         ; Shutdown GDI+
