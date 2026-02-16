@@ -3102,7 +3102,22 @@ INDEPENDENT REGIONS:
             return
         
         currentTick := A_TickCount
-        
+
+        ; Ensure tracking arrays are sized correctly FIRST (before any access)
+        regCount := this.regions.Length
+        while this.colorEnhancerVisible.Length > regCount
+            this.colorEnhancerVisible.Pop()
+        while this.colorEnhancerVisible.Length < regCount
+            this.colorEnhancerVisible.Push(false)
+        while this.colorEnhancerDetected.Length > regCount
+            this.colorEnhancerDetected.Pop()
+        while this.colorEnhancerDetected.Length < regCount
+            this.colorEnhancerDetected.Push(false)
+        while this.colorEnhancerOverlays.Length > regCount
+            this.colorEnhancerOverlays.Pop()
+        while this.colorEnhancerOverlays.Length < regCount
+            this.colorEnhancerOverlays.Push([])
+
         ; Use cached active state
         shouldShow := this.IsWindowActive() || this.isFullscreen || this.isEditFullscreen
         
@@ -3115,17 +3130,6 @@ INDEPENDENT REGIONS:
                 }
             }
             return
-        }
-        
-        ; Ensure tracking arrays are sized correctly (only when needed)
-        regCount := this.regions.Length
-        if this.colorEnhancerVisible.Length < regCount {
-            while this.colorEnhancerVisible.Length < regCount
-                this.colorEnhancerVisible.Push(false)
-            while this.colorEnhancerDetected.Length < regCount
-                this.colorEnhancerDetected.Push(false)
-            while this.colorEnhancerOverlays.Length < regCount
-                this.colorEnhancerOverlays.Push([])
         }
         
         ; Only do expensive color detection every 200ms
