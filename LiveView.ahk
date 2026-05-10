@@ -3101,6 +3101,8 @@ INDEPENDENT REGIONS:
         if !this.initialized
             return
         
+        Critical  ; Prevent interruption during state check/modification
+        
         currentTick := A_TickCount
 
         ; Ensure tracking arrays are sized correctly FIRST (before any access)
@@ -3126,7 +3128,8 @@ INDEPENDENT REGIONS:
             for i, visible in this.colorEnhancerVisible {
                 if visible {
                     this.HideColorEnhancerBorder(i)
-                    this.colorEnhancerVisible[i] := false
+                    if i <= this.colorEnhancerVisible.Length
+                        this.colorEnhancerVisible[i] := false
                 }
             }
             return
@@ -3138,11 +3141,16 @@ INDEPENDENT REGIONS:
             lastFullCheck := currentTick
         
         for i, r in this.regions {
+            ; Re-verify index in case regions changed during loop (though Critical helps)
+            if i > this.colorEnhancerVisible.Length
+                break
+
             ; Skip if no color enhancer or not enabled
             if !r.HasOwnProp("colorEnhancer") || !r.colorEnhancer.enabled {
                 if this.colorEnhancerVisible[i] {
                     this.HideColorEnhancerBorder(i)
-                    this.colorEnhancerVisible[i] := false
+                    if i <= this.colorEnhancerVisible.Length
+                        this.colorEnhancerVisible[i] := false
                 }
                 continue
             }
@@ -3151,7 +3159,8 @@ INDEPENDENT REGIONS:
             if !r.hSource {
                 if this.colorEnhancerVisible[i] {
                     this.HideColorEnhancerBorder(i)
-                    this.colorEnhancerVisible[i] := false
+                    if i <= this.colorEnhancerVisible.Length
+                        this.colorEnhancerVisible[i] := false
                 }
                 continue
             }
@@ -3160,7 +3169,7 @@ INDEPENDENT REGIONS:
             if doDetection
                 this.colorEnhancerDetected[i] := this.DetectColorInRegion(i)
             
-            colorDetected := this.colorEnhancerDetected[i]
+            colorDetected := i <= this.colorEnhancerDetected.Length ? this.colorEnhancerDetected[i] : false
             ce := r.colorEnhancer
             
             if colorDetected {
@@ -3169,23 +3178,26 @@ INDEPENDENT REGIONS:
                     cycleTime := ce.flashSpeed * 2
                     wantVisible := (Mod(currentTick, cycleTime) < ce.flashSpeed)
                     
-                    if wantVisible != this.colorEnhancerVisible[i] {
+                    if i <= this.colorEnhancerVisible.Length && wantVisible != this.colorEnhancerVisible[i] {
                         if wantVisible
                             this.ShowColorEnhancerBorder(i)
                         else
                             this.HideColorEnhancerBorder(i)
-                        this.colorEnhancerVisible[i] := wantVisible
+                        if i <= this.colorEnhancerVisible.Length
+                            this.colorEnhancerVisible[i] := wantVisible
                     }
                 } else {
-                    if !this.colorEnhancerVisible[i] {
+                    if i <= this.colorEnhancerVisible.Length && !this.colorEnhancerVisible[i] {
                         this.ShowColorEnhancerBorder(i)
-                        this.colorEnhancerVisible[i] := true
+                        if i <= this.colorEnhancerVisible.Length
+                            this.colorEnhancerVisible[i] := true
                     }
                 }
             } else {
-                if this.colorEnhancerVisible[i] {
+                if i <= this.colorEnhancerVisible.Length && this.colorEnhancerVisible[i] {
                     this.HideColorEnhancerBorder(i)
-                    this.colorEnhancerVisible[i] := false
+                    if i <= this.colorEnhancerVisible.Length
+                        this.colorEnhancerVisible[i] := false
                 }
             }
         }
@@ -3334,20 +3346,30 @@ INDEPENDENT REGIONS:
         
         ; Position borders: top, right, bottom, left
         try {
-            borders[1].BackColor := ce.borderColor
-            borders[1].Show("x" screenX " y" screenY " w" screenW " h" t " NoActivate")
-            borders[2].BackColor := ce.borderColor
-            borders[2].Show("x" (screenX + screenW - t) " y" screenY " w" t " h" screenH " NoActivate")
-            borders[3].BackColor := ce.borderColor
-            borders[3].Show("x" screenX " y" (screenY + screenH - t) " w" screenW " h" t " NoActivate")
-            borders[4].BackColor := ce.borderColor
-            borders[4].Show("x" screenX " y" screenY " w" t " h" screenH " NoActivate")
-        }
-        
-        ; Force borders to topmost (only if in fullscreen mode)
-        if this.isFullscreen {
-            for border in borders
-                DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+            if WinExist(borders[1]) {
+                borders[1].BackColor := ce.borderColor
+                borders[1].Show("x" screenX " y" screenY " w" screenW " h" t " NoActivate")
+            }
+            if WinExist(borders[2]) {
+                borders[2].BackColor := ce.borderColor
+                borders[2].Show("x" (screenX + screenW - t) " y" screenY " w" t " h" screenH " NoActivate")
+            }
+            if WinExist(borders[3]) {
+                borders[3].BackColor := ce.borderColor
+                borders[3].Show("x" screenX " y" (screenY + screenH - t) " w" screenW " h" t " NoActivate")
+            }
+            if WinExist(borders[4]) {
+                borders[4].BackColor := ce.borderColor
+                borders[4].Show("x" screenX " y" screenY " w" t " h" screenH " NoActivate")
+            }
+
+            ; Force borders to topmost (only if in fullscreen mode)
+            if this.isFullscreen {
+                for border in borders {
+                    if border && WinExist(border)
+                        DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+                }
+            }
         }
     }
 
@@ -3409,6 +3431,8 @@ INDEPENDENT REGIONS:
     }
 
     CheckMissingSources() {
+        Critical  ; Prevent interruption during state access/modification
+        
         ; Check if any sources are still missing
         hasMissing := false
         foundNew := false
@@ -4727,7 +4751,15 @@ INDEPENDENT REGIONS:
         pt := Buffer(8, 0)
         NumPut("Int", x, pt, 0)
         NumPut("Int", y, pt, 4)
-        DllCall("ClientToScreen", "Ptr", this.gui.Hwnd, "Ptr", pt)
+        try {
+            if WinExist(this.gui) {
+                DllCall("ClientToScreen", "Ptr", this.gui.Hwnd, "Ptr", pt)
+            }
+        } catch {
+            ; Handle error if gui is gone - skip coordinate conversion
+            screenX := x
+            screenY := y
+        }
         screenX := NumGet(pt, 0, "Int")
         screenY := NumGet(pt, 4, "Int")
 
@@ -4759,6 +4791,8 @@ INDEPENDENT REGIONS:
         if !this.initialized
             return
 
+        Critical  ; Prevent interruption during state access
+        
         ; Check if we should show filters: window active OR fullscreen locked
         isActive := WinActive("ahk_id " this.gui.Hwnd)
         shouldShowFilters := isActive || this.isFullscreen
@@ -4768,8 +4802,9 @@ INDEPENDENT REGIONS:
             now := A_TickCount
             if (now - lastFilterHide) > 200 {  ; Only check every 200ms
                 for overlay in this.filterOverlays {
-                    if overlay
+                    if overlay {
                         try overlay.Hide()
+                    }
                 }
                 lastFilterHide := now
             }
@@ -4789,16 +4824,24 @@ INDEPENDENT REGIONS:
             ; Keep overlays on top (only in fullscreen locked)
             if this.isFullscreen {
                 for overlay in this.filterOverlays {
-                    if overlay
-                        DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+                    if overlay {
+                        try {
+                            if WinExist(overlay)
+                                DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+                        }
+                    }
                 }
                 
                 ; Keep visible color enhancer borders on top (use cached visibility)
                 for i, borders in this.colorEnhancerOverlays {
                     if borders is Array && i <= this.colorEnhancerVisible.Length && this.colorEnhancerVisible[i] {
                         for border in borders {
-                            if border
-                                DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+                            if border {
+                                try {
+                                    if WinExist(border)
+                                        DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+                                }
+                            }
                         }
                     }
                 }
@@ -4810,9 +4853,13 @@ INDEPENDENT REGIONS:
             for i, w in this.widgets {
                 if i > this.widgetControls.Length
                     continue
-                if this.widgetControls[i].Visible
-                    DllCall("SetWindowPos", "Ptr", this.widgetControls[i].Hwnd, "Ptr", 0,
-                        "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)  ; HWND_TOP
+                if this.widgetControls[i].Visible {
+                    try {
+                        if WinExist(this.widgetControls[i])
+                            DllCall("SetWindowPos", "Ptr", this.widgetControls[i].Hwnd, "Ptr", 0,
+                                "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)  ; HWND_TOP
+                    }
+                }
             }
         }
 
