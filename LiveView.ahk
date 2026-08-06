@@ -1111,33 +1111,13 @@ INDEPENDENT REGIONS:
             r.independent := Integer(IniRead(selectedFile, section, "independent", "0")) = 1
             r.hSource := 0
 
-            ; Try to find the source window from pre-enumerated list
-            if r.sourceTitle != "" {
-                for win in allWindows {
-                    if r.sourceExe != "" && win.exe != r.sourceExe
-                        continue
-                    if win.title == r.sourceTitle {
-                        if r.sourceClass != "" {
-                            if win.class == r.sourceClass {
-                                r.hSource := win.hwnd
-                                break
-                            }
-                        } else {
-                            r.hSource := win.hwnd
-                            break
-                        }
-                    }
-                }
-            }
-            ; Fallback: any window from exe only if no specific title was saved
-            if !r.hSource && r.sourceExe != "" && r.sourceTitle == "" {
-                for win in allWindows {
-                    if win.exe == r.sourceExe {
-                        r.hSource := win.hwnd
-                        break
-                    }
-                }
-            }
+			; Try to find the source window from pre-enumerated list
+			for win in allWindows {
+				if win.class == r.sourceClass and win.title == r.sourceTitle{
+					r.hSource := win.hwnd
+					break
+				}
+			}
 
             ; If window was found, check if it's on another desktop and bring it over
             if r.hSource
@@ -1260,6 +1240,11 @@ INDEPENDENT REGIONS:
                             class: WinGetClass(winHwnd)
                         })
                     }
+					hwnd := winHwnd
+					title := WinGetTitle(winHwnd)
+					exe := WinGetProcessName(winHwnd)
+					class := WinGetClass(winHwnd)
+					;FileAppend Format("HWND: {1}`nTITLE: {2}`nEXE: {3}`nCLASS: {4}`n`n", hwnd, title, exe, class), "Test.txt"
                 }
             }
             DetectHiddenWindows(prevHidden)
@@ -1319,36 +1304,14 @@ INDEPENDENT REGIONS:
                     
                     r.independent := Integer(IniRead(configFile, section, "independent", "0")) = 1
                     r.hSource := 0
-
-                    ; Try to find the source window from pre-enumerated list
-                    if r.sourceTitle != "" {
-                        for win in allWindows {
-                            ; Filter by exe if specified
-                            if r.sourceExe != "" && win.exe != r.sourceExe
-                                continue
-                            ; Strict exact title match
-                            if win.title == r.sourceTitle {
-                                if r.sourceClass != "" {
-                                    if win.class == r.sourceClass {
-                                        r.hSource := win.hwnd
-                                        break
-                                    }
-                                } else {
-                                    r.hSource := win.hwnd
-                                    break
-                                }
-                            }
-                        }
-                    }
-                    ; Fallback: any window from exe only if no specific title was saved
-                    if !r.hSource && r.sourceExe != "" && r.sourceTitle == "" {
-                        for win in allWindows {
-                            if win.exe == r.sourceExe {
-                                r.hSource := win.hwnd
-                                break
-                            }
-                        }
-                    }
+					
+					; Try to find the source window from pre-enumerated list
+					for win in allWindows {
+						if win.class == r.sourceClass and win.title == r.sourceTitle{
+							r.hSource := win.hwnd
+							break
+						}
+					}
 
                     ; If window was found, check if it's on another desktop and bring it over
                     if r.hSource
@@ -3501,6 +3464,11 @@ INDEPENDENT REGIONS:
                     }
                     ; Strict exact title match
                     if r.sourceTitle != "" && win.title == r.sourceTitle {
+                        hwnd := win.hwnd
+                        break
+                    }
+					; Strict class match
+                    if r.sourceClass != "" && win.class == r.sourceClass {
                         hwnd := win.hwnd
                         break
                     }
