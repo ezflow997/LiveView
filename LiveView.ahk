@@ -288,9 +288,11 @@ class ThumbnailViewer {
         this.widgetDropdown.Visible := false
 
         ; Weather settings
-        this.weatherLocation := "New York"
+        this.weatherLocation := ""
         this.weatherLat := 40.71
         this.weatherLon := -74.01
+        this.weatherSource := "api"
+        this.weatherFilePath := ""
         this.weatherUnit := "fahrenheit"
         this.weatherText := "Weather: --"
         this.weatherApiKey := ""
@@ -957,6 +959,8 @@ INDEPENDENT REGIONS:
         ; Write widgets
         IniWrite(this.widgets.Length, selectedFile, "Widgets", "Count")
         IniWrite(this.weatherLocation, selectedFile, "Widgets", "WeatherLocation")
+        IniWrite(this.weatherSource, selectedFile, "Widgets", "WeatherSource")
+        IniWrite(this.weatherFilePath, selectedFile, "Widgets", "WeatherFilePath")
         IniWrite(this.weatherUnit, selectedFile, "Widgets", "WeatherUnit")
         IniWrite(this.weatherLat, selectedFile, "Widgets", "WeatherLat")
         IniWrite(this.weatherLon, selectedFile, "Widgets", "WeatherLon")
@@ -1111,13 +1115,33 @@ INDEPENDENT REGIONS:
             r.independent := Integer(IniRead(selectedFile, section, "independent", "0")) = 1
             r.hSource := 0
 
-			; Try to find the source window from pre-enumerated list
-			for win in allWindows {
-				if win.class == r.sourceClass and win.title == r.sourceTitle{
-					r.hSource := win.hwnd
-					break
-				}
-			}
+            ; Try to find the source window from pre-enumerated list
+            if r.sourceTitle != "" {
+                for win in allWindows {
+                    if r.sourceExe != "" && win.exe != r.sourceExe
+                        continue
+                    if win.title == r.sourceTitle {
+                        if r.sourceClass != "" {
+                            if win.class == r.sourceClass {
+                                r.hSource := win.hwnd
+                                break
+                            }
+                        } else {
+                            r.hSource := win.hwnd
+                            break
+                        }
+                    }
+                }
+            }
+            ; Fallback: any window from exe only if no specific title was saved
+            if !r.hSource && r.sourceExe != "" && r.sourceTitle == "" {
+                for win in allWindows {
+                    if win.exe == r.sourceExe {
+                        r.hSource := win.hwnd
+                        break
+                    }
+                }
+            }
 
             ; If window was found, check if it's on another desktop and bring it over
             if r.hSource
@@ -1143,6 +1167,8 @@ INDEPENDENT REGIONS:
         this.widgetControls := []
 
         this.weatherLocation := IniRead(selectedFile, "Widgets", "WeatherLocation", "New York")
+        this.weatherSource := IniRead(selectedFile, "Widgets", "WeatherSource", "api")
+        this.weatherFilePath := IniRead(selectedFile, "Widgets", "WeatherFilePath", "")
         this.weatherUnit := IniRead(selectedFile, "Widgets", "WeatherUnit", "fahrenheit")
         this.weatherLat := Float(IniRead(selectedFile, "Widgets", "WeatherLat", "40.71"))
         this.weatherLon := Float(IniRead(selectedFile, "Widgets", "WeatherLon", "-74.01"))
@@ -1240,11 +1266,6 @@ INDEPENDENT REGIONS:
                             class: WinGetClass(winHwnd)
                         })
                     }
-					hwnd := winHwnd
-					title := WinGetTitle(winHwnd)
-					exe := WinGetProcessName(winHwnd)
-					class := WinGetClass(winHwnd)
-					;FileAppend Format("HWND: {1}`nTITLE: {2}`nEXE: {3}`nCLASS: {4}`n`n", hwnd, title, exe, class), "Test.txt"
                 }
             }
             DetectHiddenWindows(prevHidden)
@@ -1304,14 +1325,36 @@ INDEPENDENT REGIONS:
                     
                     r.independent := Integer(IniRead(configFile, section, "independent", "0")) = 1
                     r.hSource := 0
-					
-					; Try to find the source window from pre-enumerated list
-					for win in allWindows {
-						if win.class == r.sourceClass and win.title == r.sourceTitle{
-							r.hSource := win.hwnd
-							break
-						}
-					}
+
+                    ; Try to find the source window from pre-enumerated list
+                    if r.sourceTitle != "" {
+                        for win in allWindows {
+                            ; Filter by exe if specified
+                            if r.sourceExe != "" && win.exe != r.sourceExe
+                                continue
+                            ; Strict exact title match
+                            if win.title == r.sourceTitle {
+                                if r.sourceClass != "" {
+                                    if win.class == r.sourceClass {
+                                        r.hSource := win.hwnd
+                                        break
+                                    }
+                                } else {
+                                    r.hSource := win.hwnd
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    ; Fallback: any window from exe only if no specific title was saved
+                    if !r.hSource && r.sourceExe != "" && r.sourceTitle == "" {
+                        for win in allWindows {
+                            if win.exe == r.sourceExe {
+                                r.hSource := win.hwnd
+                                break
+                            }
+                        }
+                    }
 
                     ; If window was found, check if it's on another desktop and bring it over
                     if r.hSource
@@ -1343,6 +1386,8 @@ INDEPENDENT REGIONS:
             this.widgetControls := []
 
             try this.weatherLocation := IniRead(configFile, "Widgets", "WeatherLocation", "New York")
+            try this.weatherSource := IniRead(configFile, "Widgets", "WeatherSource", "api")
+            try this.weatherFilePath := IniRead(configFile, "Widgets", "WeatherFilePath", "")
             try this.weatherUnit := IniRead(configFile, "Widgets", "WeatherUnit", "fahrenheit")
             try this.weatherLat := Float(IniRead(configFile, "Widgets", "WeatherLat", "40.71"))
             try this.weatherLon := Float(IniRead(configFile, "Widgets", "WeatherLon", "-74.01"))
@@ -3064,25 +3109,8 @@ INDEPENDENT REGIONS:
         if !this.initialized
             return
         
-        Critical  ; Prevent interruption during state check/modification
-        
         currentTick := A_TickCount
-
-        ; Ensure tracking arrays are sized correctly FIRST (before any access)
-        regCount := this.regions.Length
-        while this.colorEnhancerVisible.Length > regCount
-            this.colorEnhancerVisible.Pop()
-        while this.colorEnhancerVisible.Length < regCount
-            this.colorEnhancerVisible.Push(false)
-        while this.colorEnhancerDetected.Length > regCount
-            this.colorEnhancerDetected.Pop()
-        while this.colorEnhancerDetected.Length < regCount
-            this.colorEnhancerDetected.Push(false)
-        while this.colorEnhancerOverlays.Length > regCount
-            this.colorEnhancerOverlays.Pop()
-        while this.colorEnhancerOverlays.Length < regCount
-            this.colorEnhancerOverlays.Push([])
-
+        
         ; Use cached active state
         shouldShow := this.IsWindowActive() || this.isFullscreen || this.isEditFullscreen
         
@@ -3091,11 +3119,21 @@ INDEPENDENT REGIONS:
             for i, visible in this.colorEnhancerVisible {
                 if visible {
                     this.HideColorEnhancerBorder(i)
-                    if i <= this.colorEnhancerVisible.Length
-                        this.colorEnhancerVisible[i] := false
+                    this.colorEnhancerVisible[i] := false
                 }
             }
             return
+        }
+        
+        ; Ensure tracking arrays are sized correctly (only when needed)
+        regCount := this.regions.Length
+        if this.colorEnhancerVisible.Length < regCount {
+            while this.colorEnhancerVisible.Length < regCount
+                this.colorEnhancerVisible.Push(false)
+            while this.colorEnhancerDetected.Length < regCount
+                this.colorEnhancerDetected.Push(false)
+            while this.colorEnhancerOverlays.Length < regCount
+                this.colorEnhancerOverlays.Push([])
         }
         
         ; Only do expensive color detection every 200ms
@@ -3104,16 +3142,11 @@ INDEPENDENT REGIONS:
             lastFullCheck := currentTick
         
         for i, r in this.regions {
-            ; Re-verify index in case regions changed during loop (though Critical helps)
-            if i > this.colorEnhancerVisible.Length
-                break
-
             ; Skip if no color enhancer or not enabled
             if !r.HasOwnProp("colorEnhancer") || !r.colorEnhancer.enabled {
                 if this.colorEnhancerVisible[i] {
                     this.HideColorEnhancerBorder(i)
-                    if i <= this.colorEnhancerVisible.Length
-                        this.colorEnhancerVisible[i] := false
+                    this.colorEnhancerVisible[i] := false
                 }
                 continue
             }
@@ -3122,8 +3155,7 @@ INDEPENDENT REGIONS:
             if !r.hSource {
                 if this.colorEnhancerVisible[i] {
                     this.HideColorEnhancerBorder(i)
-                    if i <= this.colorEnhancerVisible.Length
-                        this.colorEnhancerVisible[i] := false
+                    this.colorEnhancerVisible[i] := false
                 }
                 continue
             }
@@ -3132,7 +3164,7 @@ INDEPENDENT REGIONS:
             if doDetection
                 this.colorEnhancerDetected[i] := this.DetectColorInRegion(i)
             
-            colorDetected := i <= this.colorEnhancerDetected.Length ? this.colorEnhancerDetected[i] : false
+            colorDetected := this.colorEnhancerDetected[i]
             ce := r.colorEnhancer
             
             if colorDetected {
@@ -3141,26 +3173,23 @@ INDEPENDENT REGIONS:
                     cycleTime := ce.flashSpeed * 2
                     wantVisible := (Mod(currentTick, cycleTime) < ce.flashSpeed)
                     
-                    if i <= this.colorEnhancerVisible.Length && wantVisible != this.colorEnhancerVisible[i] {
+                    if wantVisible != this.colorEnhancerVisible[i] {
                         if wantVisible
                             this.ShowColorEnhancerBorder(i)
                         else
                             this.HideColorEnhancerBorder(i)
-                        if i <= this.colorEnhancerVisible.Length
-                            this.colorEnhancerVisible[i] := wantVisible
+                        this.colorEnhancerVisible[i] := wantVisible
                     }
                 } else {
-                    if i <= this.colorEnhancerVisible.Length && !this.colorEnhancerVisible[i] {
+                    if !this.colorEnhancerVisible[i] {
                         this.ShowColorEnhancerBorder(i)
-                        if i <= this.colorEnhancerVisible.Length
-                            this.colorEnhancerVisible[i] := true
+                        this.colorEnhancerVisible[i] := true
                     }
                 }
             } else {
-                if i <= this.colorEnhancerVisible.Length && this.colorEnhancerVisible[i] {
+                if this.colorEnhancerVisible[i] {
                     this.HideColorEnhancerBorder(i)
-                    if i <= this.colorEnhancerVisible.Length
-                        this.colorEnhancerVisible[i] := false
+                    this.colorEnhancerVisible[i] := false
                 }
             }
         }
@@ -3309,30 +3338,20 @@ INDEPENDENT REGIONS:
         
         ; Position borders: top, right, bottom, left
         try {
-            if WinExist(borders[1]) {
-                borders[1].BackColor := ce.borderColor
-                borders[1].Show("x" screenX " y" screenY " w" screenW " h" t " NoActivate")
-            }
-            if WinExist(borders[2]) {
-                borders[2].BackColor := ce.borderColor
-                borders[2].Show("x" (screenX + screenW - t) " y" screenY " w" t " h" screenH " NoActivate")
-            }
-            if WinExist(borders[3]) {
-                borders[3].BackColor := ce.borderColor
-                borders[3].Show("x" screenX " y" (screenY + screenH - t) " w" screenW " h" t " NoActivate")
-            }
-            if WinExist(borders[4]) {
-                borders[4].BackColor := ce.borderColor
-                borders[4].Show("x" screenX " y" screenY " w" t " h" screenH " NoActivate")
-            }
-
-            ; Force borders to topmost (only if in fullscreen mode)
-            if this.isFullscreen {
-                for border in borders {
-                    if border && WinExist(border)
-                        DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
-                }
-            }
+            borders[1].BackColor := ce.borderColor
+            borders[1].Show("x" screenX " y" screenY " w" screenW " h" t " NoActivate")
+            borders[2].BackColor := ce.borderColor
+            borders[2].Show("x" (screenX + screenW - t) " y" screenY " w" t " h" screenH " NoActivate")
+            borders[3].BackColor := ce.borderColor
+            borders[3].Show("x" screenX " y" (screenY + screenH - t) " w" screenW " h" t " NoActivate")
+            borders[4].BackColor := ce.borderColor
+            borders[4].Show("x" screenX " y" screenY " w" t " h" screenH " NoActivate")
+        }
+        
+        ; Force borders to topmost (only if in fullscreen mode)
+        if this.isFullscreen {
+            for border in borders
+                DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
         }
     }
 
@@ -3394,8 +3413,6 @@ INDEPENDENT REGIONS:
     }
 
     CheckMissingSources() {
-        Critical  ; Prevent interruption during state access/modification
-        
         ; Check if any sources are still missing
         hasMissing := false
         foundNew := false
@@ -3464,11 +3481,6 @@ INDEPENDENT REGIONS:
                     }
                     ; Strict exact title match
                     if r.sourceTitle != "" && win.title == r.sourceTitle {
-                        hwnd := win.hwnd
-                        break
-                    }
-					; Strict class match
-                    if r.sourceClass != "" && win.class == r.sourceClass {
                         hwnd := win.hwnd
                         break
                     }
@@ -4097,8 +4109,18 @@ INDEPENDENT REGIONS:
         configGui := Gui("+AlwaysOnTop +ToolWindow", "Weather Settings")
         configGui.SetFont("s10")
 
+        ; Data Source
+        configGui.AddText("w320", "Data Source:")
+        sourceList := configGui.AddDropDownList("w320", ["WeatherAPI (Online)", "Local File (JSON/Text)"])
+        sourceList.Choose(this.weatherSource = "file" ? 2 : 1)
+
+        configGui.AddText("w320", "Local File Path:")
+        filePathEdit := configGui.AddEdit("w240", this.weatherFilePath)
+        browseBtn := configGui.AddButton("x+5 w75", "Browse")
+        browseBtn.OnEvent("Click", (*) => this.BrowseWeatherFile(filePathEdit))
+
         ; Location search
-        configGui.AddText("w320", "Search for your city:")
+        configGui.AddText("xm w320", "Search for your city (API only):")
         searchEdit := configGui.AddEdit("w240", this.weatherLocation)
         searchBtn := configGui.AddButton("x+5 w75", "Search")
 
@@ -4174,7 +4196,7 @@ INDEPENDENT REGIONS:
         saveKeyBtn.OnEvent("Click", (*) => this.SaveAPIKeyFromConfig(apiKeyEdit))
 
         this.weatherConfigGui := configGui
-        this.weatherConfigControls := {search: searchEdit, results: resultsList, unit: unitList, font: fontList, color: colorList, bg: bgList, refresh: refreshList, apiKey: apiKeyEdit}
+        this.weatherConfigControls := {source: sourceList, filePath: filePathEdit, search: searchEdit, results: resultsList, unit: unitList, font: fontList, color: colorList, bg: bgList, refresh: refreshList, apiKey: apiKeyEdit}
         this.weatherSearchResults := []
 
         searchBtn.OnEvent("Click", (*) => this.SearchWeatherLocation())
@@ -4261,8 +4283,25 @@ INDEPENDENT REGIONS:
         this.weatherConfigControls.search.Value := result.display
     }
 
+    BrowseWeatherFile(filePathEdit) {
+        initDir := ""
+        if this.weatherFilePath != "" && FileExist(this.weatherFilePath) {
+            SplitPath(this.weatherFilePath, &fileName, &dir)
+            initDir := dir
+        } else {
+            initDir := A_ScriptDir
+        }
+        selected := FileSelect(1, initDir, "Select Weather Data File", "Weather Files (*.json; *.txt; *.dat; *.*)")
+        if selected != ""
+            filePathEdit.Value := selected
+    }
+
     ApplyWeatherConfig() {
         c := this.weatherConfigControls
+
+        ; Update data source and file path
+        this.weatherSource := c.source.Value = 2 ? "file" : "api"
+        this.weatherFilePath := c.filePath.Value
 
         ; Update location from search field if no result was selected
         if this.weatherSearchResults.Length = 0
@@ -4316,6 +4355,11 @@ INDEPENDENT REGIONS:
     }
 
     DoFetchWeather() {
+        if this.weatherSource = "file" {
+            this.FetchWeatherFromFile()
+            return
+        }
+
         try {
             if this.weatherApiKey = "" {
                 this.weatherText := this.weatherLocation "`nNo API Key"
@@ -4338,9 +4382,33 @@ INDEPENDENT REGIONS:
             Run('"' curlPath '" -s -o "' this.weatherTempFile '" "' url '"',, "Hide")
 
             ; Poll for file to appear
-            SetTimer(() => this.CheckWeatherFile(), 500)
+            if !this.HasOwnProp("checkWeatherFileFn")
+                this.checkWeatherFileFn := ObjBindMethod(this, "CheckWeatherFile")
+            SetTimer(this.checkWeatherFileFn, 500)
         } catch as e {
             this.weatherText := this.weatherLocation "`nOffline"
+        }
+    }
+
+    FetchWeatherFromFile() {
+        if this.weatherFilePath = "" {
+            loc := this.weatherLocation != "" ? this.weatherLocation : "Weather"
+            this.weatherText := loc "`nNo File Specified"
+            return
+        }
+
+        if !FileExist(this.weatherFilePath) {
+            loc := this.weatherLocation != "" ? this.weatherLocation : "Weather"
+            this.weatherText := loc "`nFile Not Found"
+            return
+        }
+
+        try {
+            response := FileRead(this.weatherFilePath)
+            this.ProcessWeatherData(response)
+        } catch as e {
+            loc := this.weatherLocation != "" ? this.weatherLocation : "Weather"
+            this.weatherText := loc "`nRead Error"
         }
     }
 
@@ -4350,43 +4418,53 @@ INDEPENDENT REGIONS:
             return  ; Still downloading
 
         ; Stop polling
-        SetTimer(() => this.CheckWeatherFile(), 0)
+        if this.HasOwnProp("checkWeatherFileFn")
+            SetTimer(this.checkWeatherFileFn, 0)
 
         try {
             response := FileRead(this.weatherTempFile)
-
-            ; Parse WeatherAPI.com response
-            isCelsius := this.weatherUnit = "celsius"
-            unitSymbol := isCelsius ? "C" : "F"
-
-            ; Temperature
-            tempKey := isCelsius ? "temp_c" : "temp_f"
-            temp := RegExMatch(response, '"' tempKey '":\s*([\d.-]+)', &m) ? Round(m[1]) : "?"
-
-            ; Feels like
-            feelsKey := isCelsius ? "feelslike_c" : "feelslike_f"
-            feels := RegExMatch(response, '"' feelsKey '":\s*([\d.-]+)', &f) ? Round(f[1]) : "?"
-
-            ; Condition text
-            condition := RegExMatch(response, '"condition":\s*\{[^}]*"text":\s*"([^"]+)"', &c) ? c[1] : ""
-
-            ; Wind
-            windKey := isCelsius ? "wind_kph" : "wind_mph"
-            windUnit := isCelsius ? "km/h" : "mph"
-            wind := RegExMatch(response, '"' windKey '":\s*([\d.-]+)', &w) ? Round(w[1]) : "?"
-            windDir := RegExMatch(response, '"wind_dir":\s*"([^"]+)"', &wd) ? wd[1] : ""
-
-            ; Humidity
-            humidity := RegExMatch(response, '"humidity":\s*(\d+)', &h) ? h[1] : "?"
-
-            ; Build display text
-            this.weatherText := this.weatherLocation "`n"
-            this.weatherText .= temp "°" unitSymbol " " condition "`n"
-            this.weatherText .= "Feels: " feels "°" unitSymbol " | Wind: " wind windUnit " " windDir "`n"
-            this.weatherText .= "Humidity: " humidity "%"
+            this.ProcessWeatherData(response)
         } catch as e {
             this.weatherText := this.weatherLocation "`nError"
         }
+    }
+
+    ProcessWeatherData(response) {
+        isCelsius := this.weatherUnit = "celsius"
+        unitSymbol := isCelsius ? "C" : "F"
+
+        ; Temperature
+        tempKey := isCelsius ? "temp_c" : "temp_f"
+        temp := RegExMatch(response, '"' tempKey '":\s*([\d.-]+)', &m) ? Round(m[1]) : "?"
+
+        ; Feels like
+        feelsKey := isCelsius ? "feelslike_c" : "feelslike_f"
+        feels := RegExMatch(response, '"' feelsKey '":\s*([\d.-]+)', &f) ? Round(f[1]) : "?"
+
+        ; Condition text
+        condition := RegExMatch(response, '"condition":\s*\{[^}]*"text":\s*"([^"]+)"', &c) ? c[1] : ""
+
+        ; Wind
+        windKey := isCelsius ? "wind_kph" : "wind_mph"
+        windUnit := isCelsius ? "km/h" : "mph"
+        wind := RegExMatch(response, '"' windKey '":\s*([\d.-]+)', &w) ? Round(w[1]) : "?"
+        windDir := RegExMatch(response, '"wind_dir":\s*"([^"]+)"', &wd) ? wd[1] : ""
+
+        ; Humidity
+        humidity := RegExMatch(response, '"humidity":\s*(\d+)', &h) ? h[1] : "?"
+
+        ; City name - extract from JSON data (works for both API and file mode)
+        cityName := this.weatherLocation
+        if RegExMatch(response, '"name":\s*"([^"]+)"', &cn)
+            cityName := cn[1]
+        if RegExMatch(response, '"region":\s*"([^"]+)"', &rn) && rn[1] != ""
+            cityName .= ", " rn[1]
+
+        ; Build display text
+        this.weatherText := cityName "`n"
+        this.weatherText .= temp "°" unitSymbol " " condition "`n"
+        this.weatherText .= "Feels: " feels "°" unitSymbol " | Wind: " wind windUnit " " windDir "`n"
+        this.weatherText .= "Humidity: " humidity "%"
     }
 
     CheckWeatherRefresh() {
@@ -4719,15 +4797,7 @@ INDEPENDENT REGIONS:
         pt := Buffer(8, 0)
         NumPut("Int", x, pt, 0)
         NumPut("Int", y, pt, 4)
-        try {
-            if WinExist(this.gui) {
-                DllCall("ClientToScreen", "Ptr", this.gui.Hwnd, "Ptr", pt)
-            }
-        } catch {
-            ; Handle error if gui is gone - skip coordinate conversion
-            screenX := x
-            screenY := y
-        }
+        DllCall("ClientToScreen", "Ptr", this.gui.Hwnd, "Ptr", pt)
         screenX := NumGet(pt, 0, "Int")
         screenY := NumGet(pt, 4, "Int")
 
@@ -4759,8 +4829,6 @@ INDEPENDENT REGIONS:
         if !this.initialized
             return
 
-        Critical  ; Prevent interruption during state access
-        
         ; Check if we should show filters: window active OR fullscreen locked
         isActive := WinActive("ahk_id " this.gui.Hwnd)
         shouldShowFilters := isActive || this.isFullscreen
@@ -4770,9 +4838,8 @@ INDEPENDENT REGIONS:
             now := A_TickCount
             if (now - lastFilterHide) > 200 {  ; Only check every 200ms
                 for overlay in this.filterOverlays {
-                    if overlay {
+                    if overlay
                         try overlay.Hide()
-                    }
                 }
                 lastFilterHide := now
             }
@@ -4792,24 +4859,16 @@ INDEPENDENT REGIONS:
             ; Keep overlays on top (only in fullscreen locked)
             if this.isFullscreen {
                 for overlay in this.filterOverlays {
-                    if overlay {
-                        try {
-                            if WinExist(overlay)
-                                DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
-                        }
-                    }
+                    if overlay
+                        DllCall("SetWindowPos", "Ptr", overlay.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
                 }
                 
                 ; Keep visible color enhancer borders on top (use cached visibility)
                 for i, borders in this.colorEnhancerOverlays {
                     if borders is Array && i <= this.colorEnhancerVisible.Length && this.colorEnhancerVisible[i] {
                         for border in borders {
-                            if border {
-                                try {
-                                    if WinExist(border)
-                                        DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
-                                }
-                            }
+                            if border
+                                DllCall("SetWindowPos", "Ptr", border.Hwnd, "Ptr", -1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
                         }
                     }
                 }
@@ -4821,13 +4880,9 @@ INDEPENDENT REGIONS:
             for i, w in this.widgets {
                 if i > this.widgetControls.Length
                     continue
-                if this.widgetControls[i].Visible {
-                    try {
-                        if WinExist(this.widgetControls[i])
-                            DllCall("SetWindowPos", "Ptr", this.widgetControls[i].Hwnd, "Ptr", 0,
-                                "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)  ; HWND_TOP
-                    }
-                }
+                if this.widgetControls[i].Visible
+                    DllCall("SetWindowPos", "Ptr", this.widgetControls[i].Hwnd, "Ptr", 0,
+                        "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)  ; HWND_TOP
             }
         }
 
